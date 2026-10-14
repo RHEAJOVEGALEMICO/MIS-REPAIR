@@ -1,5 +1,7 @@
 from flask import Flask, render_template_string, request, session, redirect, url_for, jsonify
-import sqlite3
+import psycopg2
+import psycopg2.extras
+import psycopg2.extensions
 import os
 import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -8,16 +10,40 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY") or os.urandom(32)
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "it_service_system.db")
+
+# ==============================================
+# POSTGRESQL CONFIGURATION
+# ==============================================
+# Option A: set DATABASE_URL, e.g. postgresql://user:password@localhost:5432/it_service_system
+# Option B: set DB_HOST / DB_PORT / DB_NAME / DB_USER / DB_PASSWORD
+DATABASE_URL = os.environ.get("DATABASE_URL")
+DB_CONFIG = {
+    "host": os.environ.get("DB_HOST", "localhost"),
+    "port": os.environ.get("DB_PORT", "5432"),
+    "dbname": os.environ.get("DB_NAME", "it_service_system"),
+    "user": os.environ.get("DB_USER", "postgres"),
+    "password": os.environ.get("DB_PASSWORD", ""),
+}
+
+# Return TIMESTAMP columns as 'YYYY-MM-DD HH:MM:SS' strings (same as SQLite did),
+# so templates like {{ t.submitted_at[:10] }} keep working.
+def _timestamp_to_str(value, cur):
+    return value[:19] if value else None
+
+psycopg2.extensions.register_type(
+    psycopg2.extensions.new_type(psycopg2.extensions.PYDATETIME.values,
+                                 "TIMESTAMP_STR", _timestamp_to_str))
 
 # ==============================================
 # DATABASE CONNECTION
 # ==============================================
 def get_db():
+    # DictCursor rows support BOTH row[0] and row['column_name'],
+    # just like sqlite3.Row, so the rest of the code works unchanged.
     try:
-        conn = sqlite3.connect(DB_FILE)
-        conn.row_factory = sqlite3.Row
-        return conn
+        if DATABASE_URL:
+            return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.DictCursor)
+        return psycopg2.connect(cursor_factory=psycopg2.extras.DictCursor, **DB_CONFIG)
     except Exception as e:
         print(f"DB Error: {e}")
         return None
@@ -32,7 +58,7 @@ def init_db():
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         full_name TEXT NOT NULL,
         email TEXT UNIQUE NOT NULL,
         password_hash TEXT NOT NULL,
@@ -40,12 +66,12 @@ def init_db():
         department TEXT,
         contact_number TEXT,
         is_active INTEGER DEFAULT 1,
-        created_at TIMESTAMP DEFAULT (datetime('now','+8 hours'))
+        created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'Asia/Manila')
     )""")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS tickets (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         reference_no TEXT UNIQUE NOT NULL,
         requestor_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         department TEXT NOT NULL,
@@ -65,41 +91,41 @@ def init_db():
         requestor_feedback TEXT,
         admin_approved INTEGER DEFAULT 0,
         staff_approved INTEGER DEFAULT 0,
-        submitted_at TIMESTAMP DEFAULT (datetime('now','+8 hours')),
-        updated_at TIMESTAMP DEFAULT (datetime('now','+8 hours')),
+        submitted_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'Asia/Manila'),
+        updated_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'Asia/Manila'),
         completed_at TIMESTAMP,
         approved_at TIMESTAMP
     )""")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS status_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
         status TEXT NOT NULL,
         notes TEXT,
         updated_by INTEGER NOT NULL REFERENCES users(id),
-        updated_at TIMESTAMP DEFAULT (datetime('now','+8 hours'))
+        updated_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'Asia/Manila')
     )""")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS notifications (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         ticket_id INTEGER REFERENCES tickets(id) ON DELETE CASCADE,
         message TEXT NOT NULL,
         is_read INTEGER DEFAULT 0,
-        created_at TIMESTAMP DEFAULT (datetime('now','+8 hours'))
+        created_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'Asia/Manila')
     )""")
     cur.execute("""
     CREATE TABLE IF NOT EXISTS csm_responses (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
         client_type TEXT, sex TEXT, age TEXT, region TEXT, service_availed TEXT,
         cc1 TEXT, cc2 TEXT, cc3 TEXT,
         sqd0 TEXT, sqd1 TEXT, sqd2 TEXT, sqd3 TEXT, sqd4 TEXT,
         sqd5 TEXT, sqd6 TEXT, sqd7 TEXT, sqd8 TEXT,
         suggestions TEXT, email TEXT,
-        submitted_at TIMESTAMP DEFAULT (datetime('now','+8 hours'))
+        submitted_at TIMESTAMP DEFAULT (NOW() AT TIME ZONE 'Asia/Manila')
     )""")
 
     conn.commit()
@@ -124,7 +150,7 @@ def generate_ref_no():
     year = now.year
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM tickets WHERE strftime('%Y', submitted_at) = ?", (str(year),))
+    cur.execute("SELECT COUNT(*) FROM tickets WHERE TO_CHAR(submitted_at, 'YYYY') = %s", (str(year),))
     count = cur.fetchone()[0] + 1
     conn.close()
     return f"REQ-{year}-{count:05d}"
@@ -289,7 +315,7 @@ a{color:#1e5631; text-decoration:none; font-weight:bold}
     try:
         cur.execute("""
         INSERT INTO users (full_name, email, password_hash, role, department, contact_number)
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s)
         """, (
             data.get('full_name'),
             data.get('email').strip().lower(),
@@ -300,9 +326,11 @@ a{color:#1e5631; text-decoration:none; font-weight:bold}
         ))
         conn.commit()
         return redirect(url_for('login', email=data.get('email', '').strip().lower()))
-    except sqlite3.IntegrityError:
+    except psycopg2.IntegrityError:
+        conn.rollback()
         return " Email already registered! <a href='/login'>Login instead</a>"
     except Exception as e:
+        conn.rollback()
         return f"Error: {e}"
     finally:
         conn.close()
@@ -434,7 +462,7 @@ a{color:#1e5631; text-decoration:none; font-weight:bold}
 
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT id, full_name, password_hash, role, is_active FROM users WHERE email = ?", (email,))
+    cur.execute("SELECT id, full_name, password_hash, role, is_active FROM users WHERE email = %s", (email,))
     user = cur.fetchone()
     conn.close()
 
@@ -473,7 +501,7 @@ def dashboard():
     if role == 'requestor':
         cur.execute("""
             SELECT id, reference_no, equipment_type, status, priority, submitted_at
-            FROM tickets WHERE requestor_id = ? ORDER BY submitted_at DESC
+            FROM tickets WHERE requestor_id = %s ORDER BY submitted_at DESC
         """, (user_id,))
         tickets = cur.fetchall()
 
@@ -496,28 +524,28 @@ def dashboard():
                    t.scheduled_date, t.work_done, t.parts_replaced
             FROM tickets t
             JOIN users u ON t.requestor_id = u.id
-            WHERE t.assigned_to = ? ORDER BY t.submitted_at DESC
+            WHERE t.assigned_to = %s ORDER BY t.submitted_at DESC
         """, (user_id,))
         tickets = cur.fetchall()
 
-    cur.execute("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0", (user_id,))
+    cur.execute("SELECT COUNT(*) FROM notifications WHERE user_id = %s AND is_read = 0", (user_id,))
     notif_count = cur.fetchone()[0]
 
     # ---- Monthly chart data (last 12 months) + summary stats ----
     base_where = "WHERE 1=1"
     if role == 'requestor':
-        base_where += " AND requestor_id = ?"
+        base_where += " AND requestor_id = %s"
         filt_params = [user_id]
     elif role == 'staff':
-        base_where += " AND assigned_to = ?"
+        base_where += " AND assigned_to = %s"
         filt_params = [user_id]
     else:
         filt_params = []
 
     cur.execute(f"""
-        SELECT strftime('%Y-%m', submitted_at) AS ym, COUNT(*) AS cnt
+        SELECT TO_CHAR(submitted_at, 'YYYY-MM') AS ym, COUNT(*) AS cnt
         FROM tickets {base_where}
-        AND submitted_at >= date('now', '-11 months', 'start of month')
+        AND submitted_at >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Manila') - INTERVAL '11 months'
         GROUP BY ym ORDER BY ym
     """, filt_params)
     monthly_map = {r[0]: r[1] for r in cur.fetchall()}
@@ -544,7 +572,7 @@ def dashboard():
             cur.execute("""
                 SELECT equipment_type, COUNT(*) AS cnt
                 FROM tickets
-                WHERE strftime('%Y-%m', submitted_at) = ?
+                WHERE TO_CHAR(submitted_at, 'YYYY-MM') = %s
                 GROUP BY equipment_type ORDER BY cnt DESC
             """, (ym,))
             rows = cur.fetchall()
@@ -761,7 +789,7 @@ function buildEquipmentType(){
             equipment_type, brand_model, serial_property_no,
             location_room, problem_description, priority, status,
             submitted_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_admin', ?, ?)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending_admin', %s, %s)
         """, (
             ref_no, session['user_id'], data.get('department'), data.get('contact_number'),
             data.get('equipment_type'), data.get('brand_model'), data.get('serial_property_no'),
@@ -769,12 +797,12 @@ function buildEquipmentType(){
             ph_now_str(), ph_now_str()
         ))
 
-        cur.execute("SELECT id FROM tickets WHERE reference_no = ?", (ref_no,))
+        cur.execute("SELECT id FROM tickets WHERE reference_no = %s", (ref_no,))
         ticket_id = cur.fetchone()[0]
 
         cur.execute("""
         INSERT INTO status_history (ticket_id, status, notes, updated_by)
-        VALUES (?, 'pending_admin', 'Request submitted — waiting for Admin review', ?)
+        VALUES (%s, 'pending_admin', 'Request submitted — waiting for Admin review', %s)
         """, (ticket_id, session['user_id']))
 
         cur.execute("SELECT id FROM users WHERE role = 'admin'")
@@ -782,7 +810,7 @@ function buildEquipmentType(){
         for a in admins:
             cur.execute("""
             INSERT INTO notifications (user_id, ticket_id, message)
-            VALUES (?, ?, ?)
+            VALUES (%s, %s, %s)
             """, (a[0], ticket_id, f" New request: {ref_no} — needs assignment"))
 
         conn.commit()
@@ -805,7 +833,7 @@ def ticket_detail(ticket_id):
         FROM tickets t
         JOIN users req ON t.requestor_id = req.id
         LEFT JOIN users ass ON t.assigned_to = ass.id
-        WHERE t.id = ?
+        WHERE t.id = %s
     """, (ticket_id,))
     ticket = cur.fetchone()
 
@@ -826,7 +854,7 @@ def ticket_detail(ticket_id):
     cur.execute("""
         SELECT sh.*, u.full_name
         FROM status_history sh JOIN users u ON sh.updated_by = u.id
-        WHERE sh.ticket_id = ? ORDER BY sh.updated_at ASC
+        WHERE sh.ticket_id = %s ORDER BY sh.updated_at ASC
     """, (ticket_id,))
     history = cur.fetchall()
 
@@ -835,7 +863,7 @@ def ticket_detail(ticket_id):
         cur.execute("SELECT id, full_name FROM users WHERE role = 'staff' AND is_active = 1")
         staff_list = cur.fetchall()
 
-    cur.execute("UPDATE notifications SET is_read = 1 WHERE ticket_id = ? AND user_id = ?", (ticket_id, user_id))
+    cur.execute("UPDATE notifications SET is_read = 1 WHERE ticket_id = %s AND user_id = %s", (ticket_id, user_id))
 
     conn.commit()
     conn.close()
@@ -849,44 +877,49 @@ def assign_ticket(ticket_id):
 
     if not staff_id:
         return " Select a Staff to assign"
+    try:
+        staff_id = int(staff_id)
+    except (TypeError, ValueError):
+        return " Invalid Staff selected"
 
     conn = get_db()
     cur = conn.cursor()
 
-    cur.execute("SELECT id FROM users WHERE id = ? AND role = 'staff' AND is_active = 1", (staff_id,))
+    cur.execute("SELECT id FROM users WHERE id = %s AND role = 'staff' AND is_active = 1", (staff_id,))
     if cur.fetchone() is None:
         conn.close()
         return " Select an active Staff account"
 
-    cur.execute("SELECT id FROM tickets WHERE id = ?", (ticket_id,))
+    cur.execute("SELECT id FROM tickets WHERE id = %s", (ticket_id,))
     if cur.fetchone() is None:
         conn.close()
         return " Ticket not found", 404
 
-    cur.execute("UPDATE tickets SET assigned_to = ?, scheduled_date = ?, status = 'assigned', updated_at = ? WHERE id = ?",
+    cur.execute("UPDATE tickets SET assigned_to = %s, scheduled_date = %s, status = 'assigned', updated_at = %s WHERE id = %s",
                 (staff_id, scheduled_date, ph_now_str(), ticket_id))
 
-    cur.execute("SELECT full_name FROM users WHERE id = ?", (staff_id,))
+    cur.execute("SELECT full_name FROM users WHERE id = %s", (staff_id,))
     staff_name = cur.fetchone()[0]
 
-    cur.execute("SELECT reference_no FROM tickets WHERE id = ?", (ticket_id,))
+    cur.execute("SELECT reference_no FROM tickets WHERE id = %s", (ticket_id,))
     ref_no = cur.fetchone()[0]
 
+    assign_note = f"Assigned to {staff_name} — Schedule: {scheduled_date or 'Not set'}"
     cur.execute("""
     INSERT INTO status_history (ticket_id, status, notes, updated_by)
-    VALUES (?, 'assigned', 'Assigned to ' || ? || ' — Schedule: ' || ?, ?)
-    """, (ticket_id, staff_name, scheduled_date or 'Not set', session['user_id']))
+    VALUES (%s, 'assigned', %s, %s)
+    """, (ticket_id, assign_note, session['user_id']))
 
     cur.execute("""
     INSERT INTO notifications (user_id, ticket_id, message)
-    VALUES (?, ?, ?)
+    VALUES (%s, %s, %s)
     """, (staff_id, ticket_id, f" You have been assigned: {ref_no} — Schedule: {scheduled_date or 'Not set yet'}"))
 
-    cur.execute("SELECT requestor_id FROM tickets WHERE id = ?", (ticket_id,))
+    cur.execute("SELECT requestor_id FROM tickets WHERE id = %s", (ticket_id,))
     req_id = cur.fetchone()[0]
     cur.execute("""
     INSERT INTO notifications (user_id, ticket_id, message)
-    VALUES (?, ?, ?)
+    VALUES (%s, %s, %s)
     """, (req_id, ticket_id, f" Your request {ref_no} — Staff {staff_name} is assigned and will attend to you soon!"))
 
     conn.commit()
@@ -908,28 +941,28 @@ def submit_work(ticket_id):
 
     cur.execute("""
     UPDATE tickets
-    SET work_done = ?, parts_replaced = ?, resolution_notes = ?,
-        status = 'completed_pending_staff', updated_at = ?
-    WHERE id = ? AND assigned_to = ? AND status = 'assigned'
+    SET work_done = %s, parts_replaced = %s, resolution_notes = %s,
+        status = 'completed_pending_staff', updated_at = %s
+    WHERE id = %s AND assigned_to = %s AND status = 'assigned'
     """, (work_done, parts_replaced, resolution_notes, ph_now_str(), ticket_id, session['user_id']))
 
     if cur.rowcount == 0:
         conn.close()
         return " Access denied or this ticket is no longer assigned to you", 403
 
-    cur.execute("SELECT reference_no, requestor_id FROM tickets WHERE id = ?", (ticket_id,))
+    cur.execute("SELECT reference_no, requestor_id FROM tickets WHERE id = %s", (ticket_id,))
     res = cur.fetchone()
     ref_no = res[0]
     req_id = res[1]
 
     cur.execute("""
     INSERT INTO status_history (ticket_id, status, notes, updated_by)
-    VALUES (?, 'completed_pending_staff', 'Work completed — waiting your approval', ?)
+    VALUES (%s, 'completed_pending_staff', 'Work completed — waiting your approval', %s)
     """, (ticket_id, session['user_id']))
 
     cur.execute("""
     INSERT INTO notifications (user_id, ticket_id, message)
-    VALUES (?, ?, ?)
+    VALUES (%s, %s, %s)
     """, (req_id, ticket_id, f" Work done on your request {ref_no}! Please check and confirm."))
 
     cur.execute("SELECT id FROM users WHERE role = 'admin'")
@@ -937,7 +970,7 @@ def submit_work(ticket_id):
     for a in admins:
         cur.execute("""
         INSERT INTO notifications (user_id, ticket_id, message)
-        VALUES (?, ?, ?)
+        VALUES (%s, %s, %s)
         """, (a[0], ticket_id, f" Staff submitted work: {ref_no} — waiting Requestor feedback"))
 
     conn.commit()
@@ -950,26 +983,26 @@ def staff_approve_ticket(ticket_id):
     conn = get_db()
     cur = conn.cursor()
 
-    cur.execute("UPDATE tickets SET staff_approved = 1, status = 'pending_requestor_feedback', updated_at = ? WHERE id = ? AND assigned_to = ? AND status = 'completed_pending_staff'",
+    cur.execute("UPDATE tickets SET staff_approved = 1, status = 'pending_requestor_feedback', updated_at = %s WHERE id = %s AND assigned_to = %s AND status = 'completed_pending_staff'",
                 (ph_now_str(), ticket_id, session['user_id']))
 
     if cur.rowcount == 0:
         conn.close()
         return " Access denied or this ticket is not awaiting staff approval", 403
 
-    cur.execute("SELECT reference_no, requestor_id FROM tickets WHERE id = ?", (ticket_id,))
+    cur.execute("SELECT reference_no, requestor_id FROM tickets WHERE id = %s", (ticket_id,))
     res = cur.fetchone()
     ref_no = res[0]
     req_id = res[1]
 
     cur.execute("""
     INSERT INTO status_history (ticket_id, status, notes, updated_by)
-    VALUES (?, 'pending_requestor_feedback', 'Staff approved — waiting your feedback', ?)
+    VALUES (%s, 'pending_requestor_feedback', 'Staff approved — waiting your feedback', %s)
     """, (ticket_id, session['user_id']))
 
     cur.execute("""
     INSERT INTO notifications (user_id, ticket_id, message)
-    VALUES (?, ?, ?)
+    VALUES (%s, %s, %s)
     """, (req_id, ticket_id, f" Staff approved work on {ref_no}! Please give your feedback."))
 
     conn.commit()
@@ -989,27 +1022,27 @@ def submit_feedback(ticket_id):
     conn = get_db()
     cur = conn.cursor()
 
-    cur.execute("UPDATE tickets SET requestor_feedback = ?, status = 'pending_admin_final', updated_at = ? WHERE id = ? AND requestor_id = ? AND status = 'pending_requestor_feedback'",
+    cur.execute("UPDATE tickets SET requestor_feedback = %s, status = 'pending_admin_final', updated_at = %s WHERE id = %s AND requestor_id = %s AND status = 'pending_requestor_feedback'",
                 (feedback, ph_now_str(), ticket_id, session['user_id']))
 
     if cur.rowcount == 0:
         conn.close()
         return " Access denied or this ticket is not awaiting your feedback", 403
 
-    cur.execute("SELECT reference_no, assigned_to FROM tickets WHERE id = ?", (ticket_id,))
+    cur.execute("SELECT reference_no, assigned_to FROM tickets WHERE id = %s", (ticket_id,))
     res = cur.fetchone()
     ref_no = res[0]
     staff_id = res[1]
 
     cur.execute("""
     INSERT INTO status_history (ticket_id, status, notes, updated_by)
-    VALUES (?, 'pending_admin_final', 'Feedback submitted — waiting Admin final approval', ?)
+    VALUES (%s, 'pending_admin_final', 'Feedback submitted — waiting Admin final approval', %s)
     """, (ticket_id, session['user_id']))
 
     if staff_id:
         cur.execute("""
         INSERT INTO notifications (user_id, ticket_id, message)
-        VALUES (?, ?, ?)
+        VALUES (%s, %s, %s)
         """, (staff_id, ticket_id, f" Requestor feedback on {ref_no}: '{feedback}'"))
 
     cur.execute("SELECT id FROM users WHERE role = 'admin'")
@@ -1017,7 +1050,7 @@ def submit_feedback(ticket_id):
     for a in admins:
         cur.execute("""
         INSERT INTO notifications (user_id, ticket_id, message)
-        VALUES (?, ?, ?)
+        VALUES (%s, %s, %s)
         """, (a[0], ticket_id, f" Feedback received for {ref_no} — Ready for final approval"))
 
     conn.commit()
@@ -1197,13 +1230,13 @@ def csm_form(ticket_id):
         return " Only Requestors can submit the Client Satisfaction form", 403
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM tickets WHERE id = ? AND requestor_id = ?", (ticket_id, session['user_id']))
+    cur.execute("SELECT * FROM tickets WHERE id = %s AND requestor_id = %s", (ticket_id, session['user_id']))
     ticket = cur.fetchone()
     if not ticket:
         conn.close(); return " Ticket not found", 404
     if ticket['status'] != 'pending_requestor_feedback':
         conn.close(); return " This ticket is not awaiting your feedback", 403
-    cur.execute("SELECT id FROM csm_responses WHERE ticket_id = ?", (ticket_id,))
+    cur.execute("SELECT id FROM csm_responses WHERE ticket_id = %s", (ticket_id,))
     if cur.fetchone():
         conn.close(); return redirect(url_for('ticket_detail', ticket_id=ticket_id))
 
@@ -1218,7 +1251,7 @@ def csm_form(ticket_id):
     f = request.form
     cur.execute("""INSERT INTO csm_responses (ticket_id, client_type, sex, age, region, service_availed,
         cc1, cc2, cc3, sqd0, sqd1, sqd2, sqd3, sqd4, sqd5, sqd6, sqd7, sqd8, suggestions, email)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
         (ticket_id, f.get('client_type'), f.get('sex'), f.get('age'), f.get('region'), f.get('service_availed'),
          f.get('cc1'), f.get('cc2'), f.get('cc3'),
          f.get('sqd0'), f.get('sqd1'), f.get('sqd2'), f.get('sqd3'), f.get('sqd4'),
@@ -1230,21 +1263,21 @@ def csm_form(ticket_id):
     if sugg:
         summary += " | Suggestions: " + sugg[:200]
 
-    cur.execute("UPDATE tickets SET requestor_feedback = ?, status = 'pending_admin_final', updated_at = ? WHERE id = ? AND requestor_id = ? AND status = 'pending_requestor_feedback'",
+    cur.execute("UPDATE tickets SET requestor_feedback = %s, status = 'pending_admin_final', updated_at = %s WHERE id = %s AND requestor_id = %s AND status = 'pending_requestor_feedback'",
                 (summary, ph_now_str(), ticket_id, session['user_id']))
 
     cur.execute("""INSERT INTO status_history (ticket_id, status, notes, updated_by)
-        VALUES (?, 'pending_admin_final', 'CSM Feedback submitted - waiting Admin final approval', ?)""",
+        VALUES (%s, 'pending_admin_final', 'CSM Feedback submitted - waiting Admin final approval', %s)""",
         (ticket_id, session['user_id']))
 
     staff_id = ticket['assigned_to']
     ref_no = ticket['reference_no']
     if staff_id:
-        cur.execute("INSERT INTO notifications (user_id, ticket_id, message) VALUES (?,?,?)",
+        cur.execute("INSERT INTO notifications (user_id, ticket_id, message) VALUES (%s,%s,%s)",
                     (staff_id, ticket_id, " CSM feedback received on " + ref_no + ": " + (f.get('sqd0') or 'N/A')))
     cur.execute("SELECT id FROM users WHERE role = 'admin'")
     for a in cur.fetchall():
-        cur.execute("INSERT INTO notifications (user_id, ticket_id, message) VALUES (?,?,?)",
+        cur.execute("INSERT INTO notifications (user_id, ticket_id, message) VALUES (%s,%s,%s)",
                     (a[0], ticket_id, " CSM feedback received for " + ref_no + " - Ready for final approval"))
     conn.commit(); conn.close()
     return redirect(url_for('ticket_detail', ticket_id=ticket_id))
@@ -1256,12 +1289,12 @@ def view_csm_response(ticket_id):
         return " Access Denied — Admin Only", 403
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM csm_responses WHERE ticket_id = ?", (ticket_id,))
+    cur.execute("SELECT * FROM csm_responses WHERE ticket_id = %s", (ticket_id,))
     csm = cur.fetchone()
     if not csm:
         conn.close()
         return " No CSM form response found for this ticket.", 404
-    cur.execute("SELECT reference_no, equipment_type FROM tickets WHERE id = ?", (ticket_id,))
+    cur.execute("SELECT reference_no, equipment_type FROM tickets WHERE id = %s", (ticket_id,))
     tkt = cur.fetchone()
     ref_no = tkt['reference_no'] if tkt else str(ticket_id)
     service = tkt['equipment_type'] if tkt else ''
@@ -1361,14 +1394,14 @@ def admin_approve_ticket(ticket_id):
     conn = get_db()
     cur = conn.cursor()
 
-    cur.execute("UPDATE tickets SET admin_approved = 1, status = 'completed_approved', completed_at = ?, approved_at = ? WHERE id = ? AND status = 'pending_admin_final'",
+    cur.execute("UPDATE tickets SET admin_approved = 1, status = 'completed_approved', completed_at = %s, approved_at = %s WHERE id = %s AND status = 'pending_admin_final'",
                 (ph_now_str(), ph_now_str(), ticket_id))
 
     if cur.rowcount == 0:
         conn.close()
         return " Ticket not found or is not ready for final approval", 400
 
-    cur.execute("SELECT reference_no, requestor_id, assigned_to FROM tickets WHERE id = ?", (ticket_id,))
+    cur.execute("SELECT reference_no, requestor_id, assigned_to FROM tickets WHERE id = %s", (ticket_id,))
     res = cur.fetchone()
     ref_no = res[0]
     req_id = res[1]
@@ -1376,18 +1409,18 @@ def admin_approve_ticket(ticket_id):
 
     cur.execute("""
     INSERT INTO status_history (ticket_id, status, notes, updated_by)
-    VALUES (?, 'completed_approved', ' Fully approved and closed', ?)
+    VALUES (%s, 'completed_approved', ' Fully approved and closed', %s)
     """, (ticket_id, session['user_id']))
 
     cur.execute("""
     INSERT INTO notifications (user_id, ticket_id, message)
-    VALUES (?, ?, ?)
+    VALUES (%s, %s, %s)
     """, (req_id, ticket_id, f" {ref_no} — FULLY COMPLETED & APPROVED! Thank you!"))
 
     if staff_id:
         cur.execute("""
         INSERT INTO notifications (user_id, ticket_id, message)
-        VALUES (?, ?, ?)
+        VALUES (%s, %s, %s)
         """, (staff_id, ticket_id, f" {ref_no} — Closed with positive feedback. Great work!"))
 
     conn.commit()
@@ -1402,10 +1435,10 @@ def notifications():
     cur.execute("""
         SELECT n.*, t.reference_no
         FROM notifications n LEFT JOIN tickets t ON n.ticket_id = t.id
-        WHERE n.user_id = ? ORDER BY n.created_at DESC
+        WHERE n.user_id = %s ORDER BY n.created_at DESC
     """, (session['user_id'],))
     notifs = cur.fetchall()
-    cur.execute("UPDATE notifications SET is_read = 1 WHERE user_id = ?", (session['user_id'],))
+    cur.execute("UPDATE notifications SET is_read = 1 WHERE user_id = %s", (session['user_id'],))
     conn.commit()
     conn.close()
     return render_template_string(NOTIF_HTML, notifs=notifs)
