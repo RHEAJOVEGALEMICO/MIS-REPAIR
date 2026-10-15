@@ -271,8 +271,12 @@ a{color:#1e5631; text-decoration:none; font-weight:bold}
  <b>Admin</b> = Full control — Assign tasks & approve completed work
 </div>
 <form method="post">
-<label>Full Name *</label>
-<input name="full_name" required placeholder="e.g. Juan Dela Cruz">
+<label>Last Name *</label>
+<input type="text" name="last_name" required autocomplete="family-name" placeholder="Enter last name">
+<label>First Name *</label>
+<input type="text" name="first_name" required autocomplete="given-name" placeholder="Enter first name">
+<label>Middle Name (Optional)</label>
+<input type="text" name="middle_name" autocomplete="additional-name" placeholder="Enter middle name">
 <label>Email Address *</label>
 <input type="email" name="email" required placeholder="your@email.com">
 <label>Account Type / Role *</label>
@@ -301,10 +305,16 @@ a{color:#1e5631; text-decoration:none; font-weight:bold}
 </body></html>
 """
     data = request.form
-    required = ['full_name','email','password','role','department','contact_number']
+    required = ['last_name', 'first_name', 'email', 'password', 'role', 'department', 'contact_number']
     for f in required:
-        if not data.get(f):
-            return " Fill all fields — go back and complete everything"
+        if not data.get(f, '').strip():
+            return " Fill all required fields — go back and complete everything"
+
+    # Keep the existing database column and user display name compatible.
+    first_name = data.get('first_name', '').strip()
+    middle_name = data.get('middle_name', '').strip()
+    last_name = data.get('last_name', '').strip()
+    full_name = ' '.join(part for part in (first_name, middle_name, last_name) if part)
 
     role = data.get('role')
     if role not in ['admin','staff','requestor']:
@@ -317,7 +327,7 @@ a{color:#1e5631; text-decoration:none; font-weight:bold}
         INSERT INTO users (full_name, email, password_hash, role, department, contact_number)
         VALUES (%s, %s, %s, %s, %s, %s)
         """, (
-            data.get('full_name'),
+            full_name,
             data.get('email').strip().lower(),
             generate_password_hash(data.get('password')),
             role,
@@ -345,6 +355,8 @@ body{font-family:Arial; background:linear-gradient(rgba(20,66,31,0.28),rgba(30,8
 .card{background:rgba(255,255,255,0.80); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px); padding:2.5rem; border-radius:16px; box-shadow:0 8px 32px rgba(0,0,0,0.3); width:100%; max-width:420px}
 h2{text-align:center; margin-bottom:2rem; color:#1e5631}
 input{width:100%; padding:0.9rem; margin:0.5rem 0 1rem; border:1px solid #ddd; border-radius:8px; font-size:1rem}
+.show-password{display:flex;align-items:center;gap:.5rem;margin:-.35rem 0 1rem;font-size:.92rem;color:#333;cursor:pointer}
+.show-password input{width:auto;margin:0;padding:0;accent-color:#1e5631}
 button{width:100%; padding:0.9rem; background:#1e5631; color:white; border:none; border-radius:8px; font-weight:bold; cursor:pointer; font-size:1rem}
 button:hover{background:#14421f}
 p{text-align:center; margin-top:1.5rem}
@@ -407,7 +419,8 @@ a{color:#1e5631; text-decoration:none; font-weight:bold}
 <label>Email Address</label>
 <input type="email" name="email" id="loginEmail" required>
 <label>Password</label>
-<input type="password" name="password" id="loginPass" required>
+<input type="password" name="password" id="loginPass" required autocomplete="current-password">
+<label class="show-password"><input type="checkbox" id="showLoginPassword"> Show Password</label>
 <button type="submit" id="loginBtn">Login</button>
 </form>
 <p>Don't have account? <a href='/register'>Register here</a></p>
@@ -447,6 +460,9 @@ a{color:#1e5631; text-decoration:none; font-weight:bold}
       err.textContent='Connection error. Please try again.'; err.style.display='block';
       btn.disabled=false; btn.textContent='Login';
     });
+  });
+  document.getElementById('showLoginPassword').addEventListener('change',function(){
+    document.getElementById('loginPass').type=this.checked?'text':'password';
   });
   document.getElementById('loginEmail').addEventListener('input',function(){this.classList.remove('input-error');document.getElementById('loginError').style.display='none';});
   document.getElementById('loginPass').addEventListener('input',function(){this.classList.remove('input-error');document.getElementById('loginError').style.display='none';});
