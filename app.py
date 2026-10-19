@@ -1912,7 +1912,7 @@ table.history .dt{font-size:0.8rem;color:#666;white-space:nowrap}
 {% if ticket.requestor_feedback %}
 <hr>
 <h4>Feedback from Requisitioner</h4>
-<div class='details'><div class='item full'><span class='lbl'>Feedback</span><span class='val'><a href='/tickets/{{ticket.id}}/csm/view' style='display:inline-block;padding:0.55rem 1.1rem;background:#7b1fa2;color:#fff;border-radius:6px;font-weight:700;text-decoration:none;font-size:0.9rem;'>CSM Form Submitted &mdash; Click to View</a></span></div></div>
+"<div class='details'><div class='item full'><span class='lbl'>Feedback</span><span class='val'>{% if role == 'admin' %}<a href='/tickets/{{ticket.id}}/csm/view' style='display:inline-block;padding:0.55rem 1.1rem;background:#7b1fa2;color:#fff;border-radius:6px;font-weight:700;text-decoration:none;font-size:0.9rem;'>CSM Form Submitted &mdash; Click to View</a>{% else %}<a href='#' onclick='showAccessDeniedModal();return false;' style='display:inline-block;padding:0.55rem 1.1rem;background:#7b1fa2;color:#fff;border-radius:6px;font-weight:700;text-decoration:none;font-size:0.9rem;cursor:pointer;'>CSM Form Submitted &mdash; Click to View</a>{% endif %}</span></div></div>\n"
 {% endif %}
 {% if ticket.admin_approved == 1 %}<p class='approved-badge'>FULLY APPROVED &amp; CLOSED</p>{% endif %}
 </div>
@@ -2012,6 +2012,24 @@ table.history .dt{font-size:0.8rem;color:#666;white-space:nowrap}
 </table>
 </div>
 </div>
+<!-- Inline Access Denied modal (no page navigation) -->
+<div id='accessDeniedModal' style='display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.55);z-index:9999;align-items:center;justify-content:center;font-family:Arial,sans-serif;'>
+  <div style='background:#fff;border-radius:10px;max-width:400px;width:90%;text-align:center;box-shadow:0 12px 40px rgba(0,0,0,0.35);overflow:hidden;animation:admPop 0.18s ease-out;'>
+    <div style='background:#c62828;color:#fff;padding:1.1rem 1rem;font-size:1.15rem;font-weight:bold;letter-spacing:0.5px;'>ACCESS DENIED</div>
+    <div style='padding:1.6rem 2rem 1.8rem;'>
+      <p style='color:#444;margin:0 0 0.4rem 0;font-size:1rem;line-height:1.5;'><strong>Admin Only</strong></p>
+      <p style='color:#777;margin:0 0 1.4rem 0;font-size:0.9rem;line-height:1.5;'>You do not have permission to view the CSM form response.</p>
+      <button onclick='closeAccessDeniedModal()' style='background:#c62828;color:#fff;border:none;padding:0.65rem 2rem;border-radius:6px;font-weight:bold;cursor:pointer;font-size:0.95rem;'>Close</button>
+    </div>
+  </div>
+</div>
+<style>@keyframes admPop{from{transform:scale(0.92);opacity:0}to{transform:scale(1);opacity:1}}</style>
+<script>
+function showAccessDeniedModal(){document.getElementById('accessDeniedModal').style.display='flex';}
+function closeAccessDeniedModal(){document.getElementById('accessDeniedModal').style.display='none';}
+document.getElementById('accessDeniedModal').addEventListener('click',function(e){if(e.target===this)this.style.display='none';});
+document.addEventListener('keydown',function(e){if(e.key==='Escape')closeAccessDeniedModal();});
+</script>
 </body></html>
 """
 
