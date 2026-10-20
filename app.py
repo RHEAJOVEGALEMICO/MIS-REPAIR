@@ -4,6 +4,7 @@ import psycopg2.extras
 import psycopg2.extensions
 import os
 import datetime
+import sqlite3
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
@@ -35,17 +36,86 @@ psycopg2.extensions.register_type(
                                  "TIMESTAMP_STR", _timestamp_to_str))
 
 # ==============================================
-# DATABASE CONNECTION
+# DATABASE CONNECTION (PostgreSQL with automatic SQLite fallback)
 # ==============================================
+DB_BACKEND = None  # set by _detect_backend(): 'postgres' or 'sqlite'
+DB_SQLITE_PATH = os.environ.get("DB_SQLITE_PATH", "it_service_system.db")
+
+def _adapt_sqlite_sql(sql):
+    """Translate this app's PostgreSQL-style SQL into SQLite-compatible SQL.
+    Only the constructs actually used by this app are translated."""
+    sql = sql.replace('%s', '?')                                    # psycopg2 placeholder -> sqlite qmark
+    sql = sql.replace('SERIAL PRIMARY KEY', 'INTEGER PRIMARY KEY AUTOINCREMENT')
+    # Longest / most-specific patterns FIRST, before shorter ones rewrite their pieces.
+    sql = sql.replace("date_trunc('month', NOW() AT TIME ZONE 'Asia/Manila') - INTERVAL '11 months'",
+                      "datetime('now','+8 hours','start of month','-11 months')")
+    sql = sql.replace("NOW() AT TIME ZONE 'Asia/Manila'", "datetime('now','+8 hours')")
+    sql = sql.replace("TO_CHAR(submitted_at, 'YYYY-MM')", "strftime('%Y-%m', submitted_at)")
+    sql = sql.replace("TO_CHAR(submitted_at, 'YYYY')", "strftime('%Y', submitted_at)")
+    return sql
+
+class _SQLiteCursor:
+    """Wraps a sqlite3.Cursor so the rest of the app (written for psycopg2) works unchanged."""
+    def __init__(self, cur):
+        self._cur = cur
+    def execute(self, sql, params=None):
+        sql = _adapt_sqlite_sql(sql)
+        if params is None:
+            return self._cur.execute(sql)
+        return self._cur.execute(sql, params)
+    def executemany(self, sql, seq):
+        return self._cur.executemany(_adapt_sqlite_sql(sql), seq)
+    def fetchone(self): return self._cur.fetchone()
+    def fetchall(self): return self._cur.fetchall()
+    @property
+    def rowcount(self): return self._cur.rowcount
+    @property
+    def lastrowid(self): return self._cur.lastrowid
+    def close(self): return self._cur.close()
+    def __iter__(self): return iter(self._cur)
+
+class _SQLiteConn:
+    def __init__(self, conn):
+        self._conn = conn
+    def cursor(self): return _SQLiteCursor(self._conn.cursor())
+    def commit(self): return self._conn.commit()
+    def rollback(self): return self._conn.rollback()
+    def close(self): return self._conn.close()
+
+def _detect_backend():
+    """Try PostgreSQL first. If it is unreachable, fall back to SQLite.
+    The user's PostgreSQL database is NEVER modified."""
+    global DB_BACKEND
+    try:
+        if DATABASE_URL:
+            t = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.DictCursor)
+        else:
+            t = psycopg2.connect(cursor_factory=psycopg2.extras.DictCursor, **DB_CONFIG)
+        t.close()
+        DB_BACKEND = 'postgres'
+        print("[DB] Backend: PostgreSQL")
+    except Exception as e:
+        DB_BACKEND = 'sqlite'
+        print(f"[DB] PostgreSQL unavailable ({e}) -> falling back to SQLite file: {DB_SQLITE_PATH}")
+        print("[DB] Your PostgreSQL database is NOT modified. Fix credentials/host and restart to use it again.")
+
 def get_db():
-    # DictCursor rows support BOTH row[0] and row['column_name'],
-    # just like sqlite3.Row, so the rest of the code works unchanged.
+    if DB_BACKEND == 'sqlite':
+        try:
+            conn = sqlite3.connect(DB_SQLITE_PATH)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
+            return _SQLiteConn(conn)
+        except Exception as e:
+            print(f"[DB] SQLite Error: {e}")
+            return None
+    # PostgreSQL (original behaviour — your database is untouched)
     try:
         if DATABASE_URL:
             return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.DictCursor)
         return psycopg2.connect(cursor_factory=psycopg2.extras.DictCursor, **DB_CONFIG)
     except Exception as e:
-        print(f"DB Error: {e}")
+        print(f"[DB] PostgreSQL Error: {e}")
         return None
 
 # ==============================================
@@ -131,6 +201,7 @@ def init_db():
     conn.commit()
     conn.close()
 
+_detect_backend()
 init_db()
 
 # ==============================================
@@ -164,6 +235,10 @@ def login_required(f):
     def wrap(*args, **kwargs):
         if 'user_id' not in session:
             return redirect(url_for('login'))
+        # Requester must accept Terms & Conditions once per login session
+        if session.get('role') == 'requestor' and not session.get('terms_accepted'):
+            if request.endpoint not in ('terms', 'logout'):
+                return redirect(url_for('terms'))
         return f(*args, **kwargs)
     return wrap
 
@@ -477,6 +552,10 @@ a{color:#1e5631; text-decoration:none; font-weight:bold}
     is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
 
     conn = get_db()
+    if not conn:
+        if is_ajax:
+            return jsonify({"status":"error","message":"Database unavailable right now. Please try again later or contact the administrator.","field":"email"}), 503
+        return redirect(url_for('login', error=1, field='email'))
     cur = conn.cursor()
     cur.execute("SELECT id, full_name, password_hash, role, is_active FROM users WHERE email = %s", (email,))
     user = cur.fetchone()
@@ -1301,10 +1380,17 @@ def csm_form(ticket_id):
 @app.route('/tickets/<int:ticket_id>/csm/view')
 @login_required
 def view_csm_response(ticket_id):
-    if session.get('role') != 'admin':
-        return " Access Denied — Admin Only", 403
+    role = session.get('role')
+    if role not in ('admin', 'staff'):
+        return " Access Denied — Admin and Staff Only", 403
     conn = get_db()
     cur = conn.cursor()
+    if role == 'staff':
+        cur.execute("SELECT assigned_to FROM tickets WHERE id = %s", (ticket_id,))
+        _trow = cur.fetchone()
+        if not _trow or _trow['assigned_to'] != session['user_id']:
+            conn.close()
+            return " Access Denied — You are not assigned to this request", 403
     cur.execute("SELECT * FROM csm_responses WHERE ticket_id = %s", (ticket_id,))
     csm = cur.fetchone()
     if not csm:
@@ -1402,6 +1488,19 @@ def view_csm_response(ticket_id):
         "<title>CSM Form Response — " + str(ref_no) + "</title>"
     )
 
+    # Print support (admin & staff can print the submitted CSM form)
+    html = html.replace("</style>",
+        "@media print{.hdr,.back,.no-print,button{display:none !important}body{background:#fff !important;padding:0 !important;max-width:100% !important}.card{box-shadow:none !important;border:1px solid #999 !important;padding:1rem !important}input[type=radio]{-webkit-appearance:radio !important;appearance:radio !important;opacity:1 !important}input:disabled,input[readonly],textarea[readonly]{opacity:1 !important;background:#fff !important}table.sqd,.q-block{page-break-inside:avoid}.arta-box{border:1.5px solid #333 !important}}",
+        1)
+    html = html.replace(
+        "<div style='text-align:center;background:#fff3cd;",
+        "<div class='no-print' style='text-align:center;background:#fff3cd;",
+        1)
+    html = html.replace(
+        "text-decoration:none;margin-top:1rem;'>&larr; Back to Ticket</a>",
+        "text-decoration:none;margin-top:1rem;' class='no-print'>&larr; Back to Ticket</a>"
+        "<button type='button' onclick='window.print()' class='no-print' style='display:block;width:100%;padding:1rem;background:#d4a017;color:#fff;border:none;border-radius:8px;font-weight:bold;font-size:1.05rem;cursor:pointer;margin-top:1rem;'>Print this CSM Form</button>",
+        1)
     return html
 
 @app.route('/tickets/<int:ticket_id>/admin-approve', methods=['POST'])
@@ -1811,6 +1910,7 @@ button:hover{background:#14421f}
 hr{border:none;border-top:1px solid #ddd;margin:1rem 0}
 h4{color:#1e5631;margin:0.5rem 0 0.5rem}
 .approved-badge{display:inline-block;background:#2e7d32;color:white;padding:0.5rem 1rem;border-radius:8px;font-weight:bold;margin-top:0.5rem}
+@media print{.topbar,.back,.no-print,form,button{display:none !important}body{background:#fff !important}.wrap{padding:0 !important}.card{box-shadow:none !important;border:1px solid #bbb !important;page-break-inside:avoid}.grid{display:block !important}.encoder-card{page-break-inside:avoid}table{page-break-inside:avoid}.details{grid-template-columns:repeat(2,1fr) !important}}
 table.history{width:100%;border-collapse:collapse;margin-top:0.5rem;font-size:0.92rem}
 table.history th{background:#1e5631;color:white;padding:0.75rem;text-align:left;font-size:0.8rem;text-transform:uppercase;letter-spacing:0.4px}
 table.history td{padding:0.75rem;border-bottom:1px solid #eee;vertical-align:top}
@@ -1871,6 +1971,7 @@ table.history .dt{font-size:0.8rem;color:#666;white-space:nowrap}
 </div>
 <div class='wrap'>
 <a href='/dashboard' class='back'>&larr; Back to Dashboard</a>
+{% if role == 'admin' or role == 'staff' %}<div class='no-print' style='margin-bottom:0.8rem;'><button type='button' onclick='window.print()' style='width:auto;padding:0.6rem 1.4rem;background:#d4a017;color:#fff;border:none;border-radius:8px;font-weight:bold;cursor:pointer;font-size:0.95rem;'>Print Service Assistance Form</button></div>{% endif %}
 <div class='title-row'>
 <h2>Ticket &mdash; {{ticket.reference_no}}</h2>
 <span class='status-{{ticket.status}}'>
@@ -1912,7 +2013,7 @@ table.history .dt{font-size:0.8rem;color:#666;white-space:nowrap}
 {% if ticket.requestor_feedback %}
 <hr>
 <h4>Feedback from Requisitioner</h4>
-"<div class='details'><div class='item full'><span class='lbl'>Feedback</span><span class='val'>{% if role == 'admin' %}<a href='/tickets/{{ticket.id}}/csm/view' style='display:inline-block;padding:0.55rem 1.1rem;background:#7b1fa2;color:#fff;border-radius:6px;font-weight:700;text-decoration:none;font-size:0.9rem;'>CSM Form Submitted &mdash; Click to View</a>{% else %}<a href='#' onclick='showAccessDeniedModal();return false;' style='display:inline-block;padding:0.55rem 1.1rem;background:#7b1fa2;color:#fff;border-radius:6px;font-weight:700;text-decoration:none;font-size:0.9rem;cursor:pointer;'>CSM Form Submitted &mdash; Click to View</a>{% endif %}</span></div></div>\n"
+"<div class='details'><div class='item full'><span class='lbl'>Feedback</span><span class='val'>{% if role == 'admin' or role == 'staff' %}<a href='/tickets/{{ticket.id}}/csm/view' style='display:inline-block;padding:0.55rem 1.1rem;background:#7b1fa2;color:#fff;border-radius:6px;font-weight:700;text-decoration:none;font-size:0.9rem;'>CSM Form Submitted &mdash; Click to View</a>{% else %}<a href='#' onclick='showAccessDeniedModal();return false;' style='display:inline-block;padding:0.55rem 1.1rem;background:#7b1fa2;color:#fff;border-radius:6px;font-weight:700;text-decoration:none;font-size:0.9rem;cursor:pointer;'>CSM Form Submitted &mdash; Click to View</a>{% endif %}</span></div></div>\n"
 {% endif %}
 {% if ticket.admin_approved == 1 %}<p class='approved-badge'>FULLY APPROVED &amp; CLOSED</p>{% endif %}
 </div>
@@ -1931,7 +2032,7 @@ table.history .dt{font-size:0.8rem;color:#666;white-space:nowrap}
 <div class='enc-row'><span class='enc-lbl'>Date/Time </span><span class='enc-val'>{{ticket.submitted_at}}</span></div>
 </div>
 {% if role == "admin" and ticket.status == "pending_admin" %}
-<div class='card'>
+<div class='card no-print'>
 <h3>Assign to Staff</h3>
 <form method='post' action='/tickets/{{ticket.id}}/assign'>
 <label>Select Staff *</label>
@@ -1948,7 +2049,7 @@ table.history .dt{font-size:0.8rem;color:#666;white-space:nowrap}
 </div>
 {% endif %}
 {% if role == "staff" and ticket.status == "assigned" %}
-<div class='card'>
+<div class='card no-print'>
 <h3>Submit Work Report</h3>
 <form method='post' action='/tickets/{{ticket.id}}/submit-work'>
 <label>What Work Was Done? *</label>
@@ -1962,7 +2063,7 @@ table.history .dt{font-size:0.8rem;color:#666;white-space:nowrap}
 </div>
 {% endif %}
 {% if role == "staff" and ticket.status == "completed_pending_staff" %}
-<div class='card'>
+<div class='card no-print'>
 <h3>Approve Work</h3>
 <p style='margin-bottom:0.8rem'>Review the work report above. Confirm it is complete.</p>
 <form method='post' action='/tickets/{{ticket.id}}/staff-approve'>
@@ -1971,14 +2072,14 @@ table.history .dt{font-size:0.8rem;color:#666;white-space:nowrap}
 </div>
 {% endif %}
 {% if role == "requestor" and ticket.status == "pending_requestor_feedback" %}
-<div class='card' style='border:2px solid #7b1fa2;background:#faf5fc;'>
+<div class='card no-print' style='border:2px solid #7b1fa2;background:#faf5fc;'>
 <h3 style='color:#6a1b9a;border-bottom-color:#ce93d8;'> Client Satisfaction Measurement (CSM) Form</h3>
 <p style='margin-bottom:0.8rem'>The work has been completed. Please help us improve by filling out the <strong>ARTA Client Satisfaction Measurement Form</strong> (with SLSU logo). It only takes a minute. Thank you!</p>
 <a href='/tickets/{{ticket.id}}/csm' style='display:inline-block;padding:0.85rem 1.5rem;background:#7b1fa2;color:#fff;border-radius:8px;font-weight:bold;text-decoration:none;font-size:1rem;'> Fill Out CSM Form &rarr;</a>
 </div>
 {% endif %}
 {% if role == "admin" and ticket.status == "pending_admin_final" %}
-<div class='card'>
+<div class='card no-print'>
 <h3>Final Approval</h3>
 <p style='margin-bottom:0.8rem'>Review work and feedback above. Close this request.</p>
 <form method='post' action='/tickets/{{ticket.id}}/admin-approve'>
@@ -2240,6 +2341,101 @@ h2{color:#1e5631; margin-bottom:0.5rem}
 </body>
 </html>
 """
+
+
+# ==============================================
+# TERMS & CONDITIONS (shown to Requester after login)
+# ==============================================
+@app.route('/terms', methods=['GET', 'POST'])
+def terms():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    if request.method == 'POST':
+        if request.form.get('action') == 'agree':
+            session['terms_accepted'] = True
+            return redirect(url_for('dashboard'))
+        # Disagree -> log the user out
+        session.clear()
+        return redirect(url_for('login'))
+    # Admin / Staff skip the terms page; only Requesters see it
+    if session.get('role') != 'requestor':
+        return redirect(url_for('dashboard'))
+    return TERMS_HTML
+
+TERMS_HTML = """<!DOCTYPE html><html><head><title>Terms &amp; Conditions &mdash; MIS-ICT Service &amp; Repair System</title>
+<meta name='viewport' content='width=device-width, initial-scale=1.0'>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;font-family:Arial,sans-serif}
+body{background:linear-gradient(135deg,#14421f,#1e5631);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1.5rem}
+.card{background:#fff;border-radius:14px;max-width:760px;width:100%;box-shadow:0 12px 40px rgba(0,0,0,0.35);overflow:hidden}
+.hdr{background:linear-gradient(135deg,#14421f,#1e5631);border-bottom:4px solid #d4a017;color:#fff;padding:1.3rem 1.8rem;text-align:center}
+.hdr .u{font-size:1.15rem;letter-spacing:0.4px;font-weight:700}
+.hdr .sub{color:#ffd54f;font-size:0.82rem;margin-top:0.3rem;font-weight:600}
+.hdr .t{margin-top:0.7rem;font-size:1.05rem;font-weight:700;border-top:1px solid rgba(255,255,255,0.25);padding-top:0.7rem}
+.body{padding:1.5rem 1.8rem 1.8rem}
+.terms-box{max-height:340px;overflow-y:auto;border:1px solid #cfe0cf;border-radius:8px;padding:1rem 1.2rem;background:#f7faf7;font-size:0.88rem;line-height:1.6;color:#234;text-align:justify}
+.terms-box h3{color:#1e5631;font-size:0.93rem;margin:0.85rem 0 0.2rem}
+.terms-box h3:first-child{margin-top:0}
+.terms-box p{margin-bottom:0.45rem}
+.agree-row{display:flex;align-items:center;gap:0.6rem;margin:1.1rem 0;font-size:0.92rem;color:#143014;font-weight:600;cursor:pointer}
+.agree-row input{width:18px;height:18px;accent-color:#1e5631;cursor:pointer;flex-shrink:0}
+.btns{display:grid;grid-template-columns:1fr 1fr;gap:0.8rem}
+button{padding:0.9rem;border:none;border-radius:8px;font-weight:bold;font-size:1rem;cursor:pointer;color:#fff}
+.btn-agree{background:#1e5631}.btn-agree:hover{background:#14421f}.btn-agree:disabled{background:#9bb89e;cursor:not-allowed}
+.btn-disagree{background:#c62828}.btn-disagree:hover{background:#a71f1f}
+.note{text-align:center;font-size:0.78rem;color:#666;margin-top:1rem}
+@media(max-width:520px){.btns{grid-template-columns:1fr}.terms-box{max-height:260px}}
+</style></head><body>
+<div class='card'>
+<div class='hdr'>
+<div class='u'>SOUTHERN LUZON STATE UNIVERSITY</div>
+<div class='sub'>JGE &ndash; Tagkawayan Campus &middot; MIS-ICT Service &amp; Repair System</div>
+<div class='t'>TERMS &amp; CONDITIONS</div>
+</div>
+<div class='body'>
+<div class='terms-box'>
+<h3>1. Acceptance of Terms</h3>
+<p>By logging in and using this MIS-ICT Service &amp; Repair System, you (&ldquo;the Requisitioner&rdquo;) agree to be bound by these Terms &amp; Conditions. If you do not agree, click <strong>I Disagree</strong> and you will be logged out and may not use the system.</p>
+<h3>2. Purpose of the System</h3>
+<p>This system is provided solely for requesting ICT / equipment repair and maintenance services of the Southern Luzon State University &ndash; JGE Tagkawayan Campus. It may not be used for personal, non-university, or fraudulent requests.</p>
+<h3>3. Accurate Information</h3>
+<p>You must provide complete, current, and truthful information &mdash; including your name, department, contact number, equipment details, location/room, and an accurate description of the problem. Providing false information may result in the rejection of your request and appropriate university action.</p>
+<h3>4. Scope of Service</h3>
+<p>Services cover repair and maintenance of university-owned ICT equipment on campus, during office hours, subject to the availability of IT staff and spare parts. The University does not guarantee repair of equipment that is beyond economical repair or obsolete.</p>
+<h3>5. Scheduling &amp; Access</h3>
+<p>Once assigned, IT staff may visit your room or office at the scheduled date and time. A responsible person must be present to grant access. Equipment may be picked up for repair in the office and returned thereafter; you will be notified of the schedule.</p>
+<h3>6. Data &amp; Backup</h3>
+<p>You are responsible for backing up all data stored in your equipment before repair. The University and its IT staff shall not be liable for any loss of data, programs, or files, nor for pre-existing damage or defects not caused by the repair.</p>
+<h3>7. Data Privacy</h3>
+<p>Personal information collected through this system is used solely for processing your service request and is protected under the <strong>Data Privacy Act of 2012 (Republic Act 10173)</strong>. Your information will not be shared with unauthorized parties.</p>
+<h3>8. Client Satisfaction Measurement (CSM)</h3>
+<p>After completion of the service, you agree to receive and may answer the Client Satisfaction Measurement (CSM) feedback form. Your responses help improve the quality of ICT services and are kept confidential.</p>
+<h3>9. Acceptable Use &amp; Conduct</h3>
+<p>You shall treat IT staff with courtesy and respect. You shall not submit frivolous, duplicate, or malicious requests, nor misuse any feature of the system. Violations may be reported to proper university authorities.</p>
+<h3>10. Limitation of Liability</h3>
+<p>Services are provided on an &ldquo;as-is, as-available&rdquo; basis. The University shall not be liable for delays caused by unavailability of spare parts, force majeure, natural calamities, or your own failure to grant access or provide accurate information.</p>
+<h3>11. Amendments</h3>
+<p>The University reserves the right to update or modify these Terms &amp; Conditions at any time. Continued use of the system after any amendment constitutes acceptance of the revised terms.</p>
+<h3>12. Contact</h3>
+<p>For questions or concerns regarding these terms or your request, contact the MIS-ICT Office, SLSU &ndash; JGE Tagkawayan Campus, Brgy. Rizal, Tagkawayan, Quezon.</p>
+</div>
+<form method='post'>
+<label class='agree-row'><input type='checkbox' id='agreeCheck'> I have read and understood the Terms &amp; Conditions above.</label>
+<div class='btns'>
+<button type='submit' name='action' value='agree' class='btn-agree' id='agreeBtn' disabled>I Agree</button>
+<button type='submit' name='action' value='disagree' class='btn-disagree'>I Disagree</button>
+</div>
+</form>
+<p class='note'>If you disagree with these Terms &amp; Conditions, you will be logged out of the system.</p>
+</div>
+</div>
+<script>
+(function(){
+  var c=document.getElementById('agreeCheck'), b=document.getElementById('agreeBtn');
+  c.addEventListener('change', function(){ b.disabled = !c.checked; });
+})();
+</script>
+</body></html>"""
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
