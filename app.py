@@ -1705,7 +1705,7 @@ def staff_close_ticket(ticket_id):
     conn = get_db()
     cur = conn.cursor()
 
-    cur.execute("UPDATE tickets SET status = 'completed_approved', completed_at = %s, approved_at = %s WHERE id = %s AND assigned_to = %s AND status = 'pending_admin_final'",
+    cur.execute("UPDATE tickets SET staff_approved = 1, status = 'completed_approved', completed_at = %s, approved_at = %s WHERE id = %s AND assigned_to = %s AND status IN ('completed_pending_staff', 'pending_admin_final')",
                 (ph_now_str(), ph_now_str(), ticket_id, session['user_id']))
 
     if cur.rowcount == 0:
@@ -2293,8 +2293,11 @@ table.history .dt{font-size:0.8rem;color:#666;white-space:nowrap}
 <div class='card'>
 <h3>Approve Work</h3>
 <p style='margin-bottom:0.8rem'>Review the work report above. Confirm it is complete.</p>
+<form method='post' action='/tickets/{{ticket.id}}/staff-close' style='margin-bottom:0.6rem'>
+<button type='submit' class='btn-green' style='font-size:1.05rem'>Approve &amp; Close Request</button>
+</form>
 <form method='post' action='/tickets/{{ticket.id}}/staff-approve'>
-<button type='submit' class='btn-green'>Approve &amp; Notify Requestor</button>
+<button type='submit' class='btn-green' style='background:#7b1fa2'>Approve &amp; Notify Requestor (for CSM Feedback)</button>
 </form>
 </div>
 {% endif %}
