@@ -138,6 +138,11 @@ def init_db():
     cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS account_type TEXT")
     cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS terms_accepted INTEGER DEFAULT 1")
     cur.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS requisitioner_name TEXT")
+    # Staff work report fields (these appear on the Service Assistance Form)
+    cur.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS problem_reported TEXT")
+    cur.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS findings TEXT")
+    cur.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS status_notes TEXT")
+    cur.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS date_accomplished TIMESTAMP")
 
     conn.commit()
     conn.close()
@@ -638,7 +643,7 @@ def dashboard():
         cur.execute("""
             SELECT t.id, t.reference_no, t.equipment_type, t.department, t.status,
                     t.priority, t.submitted_at, u.full_name as requestor_name,
-                   t.scheduled_date, t.work_done, t.parts_replaced
+                   t.scheduled_date, t.findings, t.status_notes
             FROM tickets t
             JOIN users u ON t.requestor_id = u.id
             WHERE t.assigned_to = %s ORDER BY t.submitted_at DESC
@@ -1092,12 +1097,12 @@ body{font-family:'Times New Roman',Times,serif;font-size:12pt;line-height:1.25;m
     {% endfor %}
   </div>
 
-  <div class='fl top' style='margin-top:6mm'><b>Problem Reported:</b><div class='ln' style='white-space:pre-wrap'>{{t.problem_description}}</div></div>
-  <div class='fl'><b>Findings :</b><div class='ln'></div></div>
-  <div class='fl'><b>Status/Note:</b><div class='ln'></div></div>
+  <div class='fl top' style='margin-top:6mm'><b>Problem Reported:</b><div class='ln' style='white-space:pre-wrap'>{{t.problem_reported or t.problem_description}}</div></div>
+  <div class='fl top'><b>Findings :</b><div class='ln' style='white-space:pre-wrap'>{{t.findings or ''}}</div></div>
+  <div class='fl top'><b>Status/Note:</b><div class='ln' style='white-space:pre-wrap'>{{t.status_notes or ''}}</div></div>
   <div class='two'>
-    <div class='fl'><b>Date Accomplished :</b><div class='ln'></div></div>
-    <div class='fl r'><b>Time:</b><div class='ln'></div></div>
+    <div class='fl'><b>Date Accomplished :</b><div class='ln'>{{date_acc}}</div></div>
+    <div class='fl r'><b>Time:</b><div class='ln'>{{time_acc}}</div></div>
   </div>
 
   <div class='sg' style='margin-top:8mm'><b>Conformed:</b><div class='ln'></div></div>
@@ -1150,6 +1155,9 @@ def print_ticket(ticket_id):
     submitted = str(t['submitted_at'] or '')
     date_req = submitted[:10]
     time_req = fmt_time_12h(submitted)
+    accomplished = str(t['date_accomplished'] or '')
+    date_acc = accomplished[:10]
+    time_acc = fmt_time_12h(accomplished)
 
     # Rebuild the checked boxes from what the client chose
     selected, other_text = [], ''
@@ -1166,6 +1174,7 @@ def print_ticket(ticket_id):
     logo = m.group(0) if m else ''
 
     return render_template_string(SAF_PRINT_HTML, t=t, date_req=date_req, time_req=time_req,
+                                  date_acc=date_acc, time_acc=time_acc,
                                   complaints=SAF_COMPLAINTS, selected=selected,
                                   other_text=other_text, logo=logo)
 
@@ -1230,22 +1239,25 @@ def assign_ticket(ticket_id):
 @app.route('/tickets/<int:ticket_id>/submit-work', methods=['POST'])
 @staff_required
 def submit_work(ticket_id):
-    work_done = request.form.get('work_done', '').strip()
-    parts_replaced = request.form.get('parts_replaced', '').strip()
-    resolution_notes = request.form.get('resolution_notes', '').strip()
+    problem_reported = request.form.get('problem_reported', '').strip()
+    findings = request.form.get('findings', '').strip()
+    status_notes = request.form.get('status_notes', '').strip()
 
-    if not work_done:
-        return " Describe what work was done"
+    if not problem_reported:
+        return " Enter the Problem Reported"
+    if not findings:
+        return " Enter your Findings"
 
     conn = get_db()
     cur = conn.cursor()
 
     cur.execute("""
     UPDATE tickets
-    SET work_done = %s, parts_replaced = %s, resolution_notes = %s,
+    SET problem_reported = %s, findings = %s, status_notes = %s,
+        date_accomplished = %s,
         status = 'completed_pending_staff', updated_at = %s
     WHERE id = %s AND assigned_to = %s AND status = 'assigned'
-    """, (work_done, parts_replaced, resolution_notes, ph_now_str(), ticket_id, session['user_id']))
+    """, (problem_reported, findings, status_notes, ph_now_str(), ph_now_str(), ticket_id, session['user_id']))
 
     if cur.rowcount == 0:
         conn.close()
@@ -1811,13 +1823,15 @@ def admin_reports():
     cur = conn.cursor()
     cur.execute("""
         SELECT t.id, t.reference_no, t.equipment_type, t.department,
-               t.status, t.work_done, t.parts_replaced, t.resolution_notes,
+               t.status, t.problem_reported, t.findings, t.status_notes,
+               t.date_accomplished, t.work_done, t.parts_replaced, t.resolution_notes,
                t.updated_at, req.full_name AS requestor_name,
                ass.full_name AS staff_name
         FROM tickets t
         JOIN users req ON t.requestor_id = req.id
         LEFT JOIN users ass ON t.assigned_to = ass.id
-        WHERE t.work_done IS NOT NULL AND TRIM(t.work_done) != ''
+        WHERE (t.findings IS NOT NULL AND TRIM(t.findings) != '')
+           OR (t.work_done IS NOT NULL AND TRIM(t.work_done) != '')
         ORDER BY t.updated_at DESC
     """)
     reports = cur.fetchall()
@@ -2245,13 +2259,20 @@ table.history .dt{font-size:0.8rem;color:#666;white-space:nowrap}
 {% if ticket.scheduled_date %}<tr><th>Scheduled Date</th><td>{{ticket.scheduled_date}}</td></tr>{% endif %}
 <tr><th>Problem Description</th><td>{{ticket.problem_description}}</td></tr>
 </table>
-{% if ticket.work_done %}
+{% if ticket.findings or ticket.work_done %}
 <hr>
 <h4>Work Report</h4>
 <div class='details'>
+{% if ticket.findings %}
+{% if ticket.problem_reported %}<div class='item full'><span class='lbl'>Problem Reported</span><span class='val'>{{ticket.problem_reported}}</span></div>{% endif %}
+<div class='item full'><span class='lbl'>Findings</span><span class='val'>{{ticket.findings}}</span></div>
+{% if ticket.status_notes %}<div class='item full'><span class='lbl'>Status / Notes</span><span class='val'>{{ticket.status_notes}}</span></div>{% endif %}
+{% if ticket.date_accomplished %}<div class='item full'><span class='lbl'>Date &amp; Time Accomplished</span><span class='val'>{{ticket.date_accomplished|ph12}}</span></div>{% endif %}
+{% else %}
 <div class='item full'><span class='lbl'>Work Done</span><span class='val'>{{ticket.work_done}}</span></div>
 {% if ticket.parts_replaced %}<div class='item full'><span class='lbl'>Parts Replaced / Used</span><span class='val'>{{ticket.parts_replaced}}</span></div>{% endif %}
 {% if ticket.resolution_notes %}<div class='item full'><span class='lbl'>Remarks / Resolution Notes</span><span class='val'>{{ticket.resolution_notes}}</span></div>{% endif %}
+{% endif %}
 </div>
 {% endif %}
 {% if ticket.requestor_feedback %}
@@ -2296,12 +2317,13 @@ table.history .dt{font-size:0.8rem;color:#666;white-space:nowrap}
 <div class='card'>
 <h3>Submit Work Report</h3>
 <form method='post' action='/tickets/{{ticket.id}}/submit-work'>
-<label>What Work Was Done? *</label>
-<textarea name='work_done' rows='3' required placeholder='Describe the repair or action taken...'></textarea>
-<label>Parts Replaced / Used</label>
-<textarea name='parts_replaced' rows='2' placeholder='List any parts replaced...'></textarea>
-<label>Additional Notes / Remarks</label>
-<textarea name='resolution_notes' rows='2' placeholder='Any follow-up needed...'></textarea>
+<label>Problem Reported *</label>
+<textarea name='problem_reported' rows='3' required placeholder='Problem reported by the requisitioner...'>{{ticket.problem_description}}</textarea>
+<label>Findings *</label>
+<textarea name='findings' rows='3' required placeholder='What you found after checking / the work done...'></textarea>
+<label>Status / Notes</label>
+<textarea name='status_notes' rows='2' placeholder='e.g. Repaired, Needs replacement part, For follow-up...'></textarea>
+<p style='font-size:0.8rem;color:#666;margin:0.4rem 0'>Date &amp; time accomplished are recorded automatically when you submit.</p>
 <button type='submit' class='btn-green'>Submit Work Report</button>
 </form>
 </div>
@@ -2564,9 +2586,16 @@ h2{color:#1e5631; margin-bottom:0.5rem}
 <div class='rep-cell'><div class='rl'>Submitted / Updated</div><div class='rv' style='font-size:0.82rem'>{{report.updated_at|ph12}}</div></div>
 </div>
 <div class='rep-work'>
+{% if report.findings %}
+{% if report.problem_reported %}<div class='rw-row'><span class='rw-lbl'>Problem reported:</span>{{report.problem_reported}}</div>{% endif %}
+<div class='rw-row'><span class='rw-lbl'>Findings:</span>{{report.findings}}</div>
+{% if report.status_notes %}<div class='rw-row'><span class='rw-lbl'>Status/Notes:</span>{{report.status_notes}}</div>{% endif %}
+{% if report.date_accomplished %}<div class='rw-row'><span class='rw-lbl'>Accomplished:</span>{{report.date_accomplished|ph12}}</div>{% endif %}
+{% else %}
 <div class='rw-row'><span class='rw-lbl'>Work completed:</span>{{report.work_done}}</div>
 {% if report.parts_replaced %}<div class='rw-row'><span class='rw-lbl'>Parts replaced:</span>{{report.parts_replaced}}</div>{% endif %}
 {% if report.resolution_notes %}<div class='rw-row'><span class='rw-lbl'>Remarks:</span>{{report.resolution_notes}}</div>{% endif %}
+{% endif %}
 </div>
 <div class='rep-actions'><a href='/tickets/{{report.id}}' class='btn'>View Full Ticket</a></div>
 </div>
