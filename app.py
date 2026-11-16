@@ -712,8 +712,8 @@ def dashboard():
     conn.close()
 
     welcome_msg = {
-        'admin': " Welcome, Admin! Review requests, assign to Staff, and approve completed work.",
-        'staff': " Welcome, Staff! See tasks assigned to you. Set schedule, report work done, then approve.",
+        'admin': " Welcome, Admin! Review requests and assign them to Staff.",
+        'staff': " Welcome, Staff! See tasks assigned to you. Set schedule, report work done, then approve & close.",
         'requestor': " Welcome! Submit repair requests, track status, and give feedback once fixed."
     }.get(role, "Welcome!")
 
@@ -1320,14 +1320,14 @@ def submit_feedback(ticket_id):
 
     cur.execute("""
     INSERT INTO status_history (ticket_id, status, notes, updated_by)
-    VALUES (%s, 'pending_admin_final', 'Feedback submitted — waiting Admin final approval', %s)
+    VALUES (%s, 'pending_admin_final', 'Feedback submitted — waiting Staff final approval', %s)
     """, (ticket_id, session['user_id']))
 
     if staff_id:
         cur.execute("""
         INSERT INTO notifications (user_id, ticket_id, message)
         VALUES (%s, %s, %s)
-        """, (staff_id, ticket_id, f" Requestor feedback on {ref_no}: '{feedback}'"))
+        """, (staff_id, ticket_id, f" Requestor feedback on {ref_no}: '{feedback}' — you may now approve & close it"))
 
     cur.execute("SELECT id FROM users WHERE role = 'admin'")
     admins = cur.fetchall()
@@ -1335,7 +1335,7 @@ def submit_feedback(ticket_id):
         cur.execute("""
         INSERT INTO notifications (user_id, ticket_id, message)
         VALUES (%s, %s, %s)
-        """, (a[0], ticket_id, f" Feedback received for {ref_no} — Ready for final approval"))
+        """, (a[0], ticket_id, f" Feedback received for {ref_no} — Staff will approve & close it"))
 
     conn.commit()
     conn.close()
@@ -1578,18 +1578,18 @@ def csm_form(ticket_id):
                 (summary, ph_now_str(), ticket_id, session['user_id']))
 
     cur.execute("""INSERT INTO status_history (ticket_id, status, notes, updated_by)
-        VALUES (%s, 'pending_admin_final', 'CSM Feedback submitted - waiting Admin final approval', %s)""",
+        VALUES (%s, 'pending_admin_final', 'CSM Feedback submitted - waiting Staff final approval', %s)""",
         (ticket_id, session['user_id']))
 
     staff_id = ticket['assigned_to']
     ref_no = ticket['reference_no']
     if staff_id:
         cur.execute("INSERT INTO notifications (user_id, ticket_id, message) VALUES (%s,%s,%s)",
-                    (staff_id, ticket_id, " CSM feedback received on " + ref_no + ": " + (f.get('sqd0') or 'N/A')))
+                    (staff_id, ticket_id, " CSM feedback received on " + ref_no + ": " + (f.get('sqd0') or 'N/A') + " — you may now approve & close it"))
     cur.execute("SELECT id FROM users WHERE role = 'admin'")
     for a in cur.fetchall():
         cur.execute("INSERT INTO notifications (user_id, ticket_id, message) VALUES (%s,%s,%s)",
-                    (a[0], ticket_id, " CSM feedback received for " + ref_no + " - Ready for final approval"))
+                    (a[0], ticket_id, " CSM feedback received for " + ref_no + " - Staff will approve & close it"))
     conn.commit(); conn.close()
     return redirect(url_for('ticket_detail', ticket_id=ticket_id))
 
@@ -1698,6 +1698,38 @@ def view_csm_response(ticket_id):
     )
 
     return html
+
+@app.route('/tickets/<int:ticket_id>/staff-close', methods=['POST'])
+@staff_required
+def staff_close_ticket(ticket_id):
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("UPDATE tickets SET status = 'completed_approved', completed_at = %s, approved_at = %s WHERE id = %s AND assigned_to = %s AND status = 'pending_admin_final'",
+                (ph_now_str(), ph_now_str(), ticket_id, session['user_id']))
+
+    if cur.rowcount == 0:
+        conn.close()
+        return " Access denied or this ticket is not ready to be closed", 403
+
+    cur.execute("SELECT reference_no, requestor_id FROM tickets WHERE id = %s", (ticket_id,))
+    res = cur.fetchone()
+    ref_no = res[0]
+    req_id = res[1]
+
+    cur.execute("""
+    INSERT INTO status_history (ticket_id, status, notes, updated_by)
+    VALUES (%s, 'completed_approved', ' Approved and closed by Staff', %s)
+    """, (ticket_id, session['user_id']))
+
+    cur.execute("""
+    INSERT INTO notifications (user_id, ticket_id, message)
+    VALUES (%s, %s, %s)
+    """, (req_id, ticket_id, f" {ref_no} — FULLY COMPLETED & CLOSED! Thank you!"))
+
+    conn.commit()
+    conn.close()
+    return redirect(url_for('ticket_detail', ticket_id=ticket_id))
 
 @app.route('/tickets/<int:ticket_id>/admin-approve', methods=['POST'])
 @admin_required
@@ -2210,7 +2242,7 @@ table.history .dt{font-size:0.8rem;color:#666;white-space:nowrap}
 <h4>Feedback from Requisitioner</h4>
 "<div class='details'><div class='item full'><span class='lbl'>Feedback</span><span class='val'>{% if role == 'admin' %}<a href='/tickets/{{ticket.id}}/csm/view' style='display:inline-block;padding:0.55rem 1.1rem;background:#7b1fa2;color:#fff;border-radius:6px;font-weight:700;text-decoration:none;font-size:0.9rem;'>CSM Form Submitted &mdash; Click to View</a>{% else %}<a href='#' onclick='showAccessDeniedModal();return false;' style='display:inline-block;padding:0.55rem 1.1rem;background:#7b1fa2;color:#fff;border-radius:6px;font-weight:700;text-decoration:none;font-size:0.9rem;cursor:pointer;'>CSM Form Submitted &mdash; Click to View</a>{% endif %}</span></div></div>\n"
 {% endif %}
-{% if ticket.admin_approved == 1 %}<p class='approved-badge'>FULLY APPROVED &amp; CLOSED</p>{% endif %}
+{% if ticket.status == "completed_approved" %}<p class='approved-badge'>FULLY APPROVED &amp; CLOSED</p>{% endif %}
 </div>
 <div>
 <div class='encoder-card'>
@@ -2273,11 +2305,11 @@ table.history .dt{font-size:0.8rem;color:#666;white-space:nowrap}
 <a href='/tickets/{{ticket.id}}/csm' style='display:inline-block;padding:0.85rem 1.5rem;background:#7b1fa2;color:#fff;border-radius:8px;font-weight:bold;text-decoration:none;font-size:1rem;'> Fill Out CSM Form &rarr;</a>
 </div>
 {% endif %}
-{% if role == "admin" and ticket.status == "pending_admin_final" %}
+{% if role in ["staff", "admin"] and ticket.status == "pending_admin_final" %}
 <div class='card'>
 <h3>Final Approval</h3>
 <p style='margin-bottom:0.8rem'>Review work and feedback above. Close this request.</p>
-<form method='post' action='/tickets/{{ticket.id}}/admin-approve'>
+<form method='post' action='{% if role == "staff" %}/tickets/{{ticket.id}}/staff-close{% else %}/tickets/{{ticket.id}}/admin-approve{% endif %}'>
 <button type='submit' class='btn-green' style='font-size:1.1rem'>Approve &amp; Close Request</button>
 </form>
 </div>
