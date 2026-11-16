@@ -153,6 +153,28 @@ def ph_now():
 def ph_now_str():
     return ph_now().strftime('%Y-%m-%d %H:%M:%S')
 
+def fmt_12h(value):
+    """'2026-11-16 14:05:33' -> '2026-11-16 2:05 PM' (12-hour clock, Philippine Time)."""
+    if not value:
+        return ''
+    text = str(value)[:19]
+    try:
+        dt = datetime.datetime.strptime(text, '%Y-%m-%d %H:%M:%S')
+    except ValueError:
+        return str(value)
+    return dt.strftime('%Y-%m-%d ') + dt.strftime('%I:%M %p').lstrip('0')
+
+def fmt_time_12h(value):
+    if not value:
+        return ''
+    try:
+        dt = datetime.datetime.strptime(str(value)[:19], '%Y-%m-%d %H:%M:%S')
+    except ValueError:
+        return ''
+    return dt.strftime('%I:%M %p').lstrip('0')
+
+app.add_template_filter(fmt_12h, 'ph12')
+
 # ==============================================
 # REFERENCE NUMBER: REQ-2026-00001
 # ==============================================
@@ -847,9 +869,10 @@ document.getElementById('safLogo').src = document.images[0].src;
   function tick(){
     var p = new Date(Date.now() + offset + 8*3600000);   // shift to UTC+8, read with getUTC*
     var y = p.getUTCFullYear(), m = String(p.getUTCMonth()+1).padStart(2,'0'), d = String(p.getUTCDate()).padStart(2,'0');
-    var hh = String(p.getUTCHours()).padStart(2,'0'), mm = String(p.getUTCMinutes()).padStart(2,'0');
+    var h24 = p.getUTCHours(), mm = String(p.getUTCMinutes()).padStart(2,'0');
+    var ap = h24 >= 12 ? 'PM' : 'AM', h12 = h24 % 12 || 12;
     document.getElementById('dateReq').value = y + '-' + m + '-' + d;
-    document.getElementById('timeReq').value = hh + ':' + mm;
+    document.getElementById('timeReq').value = h12 + ':' + mm + ' ' + ap + ' (PHT)';
   }
   tick(); setInterval(tick, 1000);
 })();
@@ -1076,7 +1099,7 @@ body{font-size:12px;line-height:1.35;max-width:186mm;margin:0 auto;padding:8px}
     <div><div class='ln'>{{t.requisitioner_name or t.requestor_name}}</div>Requisitioner</div>
     <div><div class='ln'>{{t.assigned_name or '&nbsp;'|safe}}</div>ICT Staff</div>
   </div>
-  <div class='foot'>Ref. {{t.reference_no}} &middot; Submitted {{t.submitted_at}} (PHT) &middot; MIS ICT System &amp; Repair</div>
+  <div class='foot'>Ref. {{t.reference_no}} &middot; Submitted {{t.submitted_at|ph12}} (PHT) &middot; MIS ICT System &amp; Repair</div>
 </div>
 <script>if(location.search.indexOf('auto=1')>-1){window.addEventListener('load',function(){setTimeout(function(){window.print();},300);});}</script>
 </body></html>"""
@@ -1109,7 +1132,7 @@ def print_ticket(ticket_id):
     # Date / time are the SERVER timestamp saved when the request was submitted (Philippine Time)
     submitted = str(t['submitted_at'] or '')
     date_req = submitted[:10]
-    time_req = submitted[11:16]
+    time_req = fmt_time_12h(submitted) + ' (PHT)'
 
     # Rebuild the checked boxes from what the client chose
     selected, other_text = [], ''
@@ -2201,7 +2224,7 @@ table.history .dt{font-size:0.8rem;color:#666;white-space:nowrap}
 <div class='enc-row'><span class='enc-lbl'>Email</span><span class='enc-val email'>{{ticket.requestor_email}}</span></div>
 <div class='enc-row'><span class='enc-lbl'>Department</span><span class='enc-val'>{{ticket.department}}</span></div>
 <div class='enc-row'><span class='enc-lbl'>Contact No.</span><span class='enc-val'>{{ticket.contact_number}}</span></div>
-<div class='enc-row'><span class='enc-lbl'>Date/Time </span><span class='enc-val'>{{ticket.submitted_at}}</span></div>
+<div class='enc-row'><span class='enc-lbl'>Date/Time </span><span class='enc-val'>{{ticket.submitted_at|ph12}} (PHT)</span></div>
 </div>
 {% if role == "admin" and ticket.status == "pending_admin" %}
 <div class='card'>
@@ -2277,7 +2300,7 @@ table.history .dt{font-size:0.8rem;color:#666;white-space:nowrap}
 <td>{{loop.index}}</td>
 <td class='st'>{{h.status.replace('_',' ').title()}}</td>
 <td>{{h.full_name}}</td>
-<td class='dt'>{{h.updated_at}}</td>
+<td class='dt'>{{h.updated_at|ph12}}</td>
 <td>{% if h.notes %}{{h.notes}}{% else %}&mdash;{% endif %}</td>
 </tr>
 {% endfor %}
@@ -2374,7 +2397,7 @@ h2{color:#1e5631; margin-bottom:1.5rem}
 {% for n in notifs %}
 <div class='item'>
 <p><strong>{{n.message}}</strong> — <a href='/tickets/{{n.ticket_id}}'>View Details →</a></p>
-<p class='time'>{{n.created_at}}</p>
+<p class='time'>{{n.created_at|ph12}}</p>
 </div>
 {% endfor %}
 {% else %}
@@ -2489,7 +2512,7 @@ h2{color:#1e5631; margin-bottom:0.5rem}
 <div class='rep-grid'>
 <div class='rep-cell'><div class='rl'>Assigned Staff</div><div class='rv'>{{report.staff_name or 'Not assigned'}}</div></div>
 <div class='rep-cell'><div class='rl'>Requestor / Dept</div><div class='rv'>{{report.requestor_name}} / {{report.department}}</div></div>
-<div class='rep-cell'><div class='rl'>Submitted / Updated</div><div class='rv' style='font-size:0.82rem'>{{report.updated_at}}</div></div>
+<div class='rep-cell'><div class='rl'>Submitted / Updated</div><div class='rv' style='font-size:0.82rem'>{{report.updated_at|ph12}}</div></div>
 </div>
 <div class='rep-work'>
 <div class='rw-row'><span class='rw-lbl'>Work completed:</span>{{report.work_done}}</div>
