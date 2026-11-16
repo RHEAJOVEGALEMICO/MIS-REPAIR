@@ -1010,7 +1010,8 @@ SAF_PRINT_HTML = """<!DOCTYPE html><html><head><meta charset='UTF-8'>
 <title>Service Assistance Form — {{t.reference_no}}</title>
 <meta name='viewport' content='width=device-width, initial-scale=1.0'>
 <style>
-@page{size:A4 portrait;margin:11mm 16mm}
+@page{size:A4 portrait;margin:0}
+@media print{body{padding:11mm 16mm !important;max-width:none !important;margin:0 !important}.bar{display:none !important}}
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{background:#fff;color:#000}
 body{font-family:'Times New Roman',Times,serif;font-size:12pt;line-height:1.25;max-width:178mm;margin:0 auto;padding:8px}
@@ -1384,6 +1385,7 @@ input[type=text],input[type=email],textarea{width:100%;padding:0.65rem;margin:0.
 .csm-hdr{text-align:center;position:relative;margin-bottom:1rem;padding-top:0.5rem}
 .arta-box{position:absolute;top:0;right:0;border:1.5px solid #333;padding:0.4rem 0.6rem;font-size:0.62rem;text-align:right;line-height:1.3;font-weight:700;color:#222;border-radius:3px;max-width:200px}
 .control-no{position:absolute;top:0.5rem;left:0;font-size:0.78rem;font-weight:600;color:#333;text-align:left}
+.form-code{margin-top:1.2rem;font-size:0.72rem;font-weight:700;line-height:1.4;color:#000;text-align:left}
 .csm-intro{font-size:0.78rem;color:#444;line-height:1.5;margin:0.8rem 0;text-align:justify}
 .q-block{margin:1rem 0;padding:0.8rem;background:#fafbf9;border:1px solid #e0e8e0;border-radius:6px}
 .q-title{font-weight:700;color:#14421f;font-size:0.9rem;margin-bottom:0.5rem}
@@ -1440,10 +1442,11 @@ button:hover{background:#14421f}
   [class*="status-"]{display:inline-block !important;margin:0.1rem !important}
 }
 /* ===== PRINT: the whole CSM form must fit on ONE page ===== */
-@page{size:A4 portrait;margin:8mm}
+@page{size:A4 portrait;margin:0}
 @media print{
   *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
   html,body{background:#fff !important;margin:0 !important;padding:0 !important;max-width:none !important;height:auto !important}
+  body{padding:8mm !important}
   body{font-size:10px !important}
   .hdr,.back,.noprint,button,form > a,form > div[style*='ffc107']{display:none !important}
   .card{box-shadow:none !important;padding:0 !important;border-radius:0 !important;page-break-inside:avoid;break-inside:avoid}
@@ -1452,6 +1455,7 @@ button:hover{background:#14421f}
   .csm-hdr div{font-size:10px !important}
   .arta-box{font-size:7px !important;padding:2px 4px !important;max-width:150px !important}
   .control-no{font-size:9px !important}
+  .form-code{font-size:8px !important;margin-top:6px !important}
   .csm-intro{font-size:8px !important;line-height:1.25 !important;margin:3px 0 !important}
   label{font-size:9.5px !important;margin:3px 0 1px !important}
   .opt{font-size:9px !important;margin:1px 0 !important;gap:3px !important}
@@ -1560,6 +1564,7 @@ button:hover{background:#14421f}
   <input type='email' name='email' placeholder='you@example.com'>
   <button type='submit'> Submit Client Satisfaction Form &mdash; THANK YOU!</button>
   </form>
+  <div class='form-code'>BP-SLSU-8 OF1, rev. 0<br>Effective: 08/07/2023</div>
 </div>
 </body></html>"""
 
@@ -1838,6 +1843,155 @@ def admin_reports():
     conn.close()
     return render_template_string(ADMIN_REPORTS_HTML, reports=reports)
 
+
+# ==============================================
+# ADMIN: CSM SURVEY MONITORING (summary + tally per question)
+# ==============================================
+CSM_SQD_LABELS = ['Strongly Disagree', 'Disagree', 'Neither Agree nor Disagree', 'Agree', 'Strongly Agree', 'N/A']
+CSM_SCORE = {'Strongly Disagree': 1, 'Disagree': 2, 'Neither Agree nor Disagree': 3, 'Agree': 4, 'Strongly Agree': 5}
+CSM_QUESTIONS = [
+    ('client_type', 'Client type', ['Citizen', 'Business', 'Government']),
+    ('sex', 'Sex', ['Male', 'Female']),
+    ('cc1', "CC1. Which of the following best describes your awareness of a Citizen's Charter (CC)?",
+        [('1', "1. I know what a CC is, and I saw this office's CC."),
+         ('2', "2. I know what a CC is, but I did NOT see this office's CC."),
+         ('3', "3. I learned of the CC only when I saw this office's CC."),
+         ('4', "4. I do not know what a CC is, and I did not see one in this office.")]),
+    ('cc2', 'CC2. If aware of CC, would you say the CC of this office was...?',
+        [('1', '1. Easy to see'), ('2', '2. Somewhat easy to see'), ('3', '3. Difficult to see'),
+         ('4', '4. Not visible at all'), ('5', '5. N/A')]),
+    ('cc3', 'CC3. If aware of CC, how much did the CC help you in your transaction?',
+        [('1', '1. Helped very much'), ('2', '2. Somewhat helped'), ('3', '3. Did not help'), ('4', '4. N/A')]),
+    ('sqd0', 'SQD0. I am satisfied with the service that I availed.', CSM_SQD_LABELS),
+    ('sqd1', 'SQD1. I spent a reasonable amount of time for my transaction.', CSM_SQD_LABELS),
+    ('sqd2', "SQD2. The office followed the transaction's requirements and steps based on the information provided.", CSM_SQD_LABELS),
+    ('sqd3', 'SQD3. The steps I needed to do for my transaction were easy and simple.', CSM_SQD_LABELS),
+    ('sqd4', 'SQD4. I easily found information about my transaction from the office or its website.', CSM_SQD_LABELS),
+    ('sqd5', 'SQD5. I paid a reasonable amount of fees for my transactions.', CSM_SQD_LABELS),
+    ('sqd6', 'SQD6. I feel the office was fair to everyone, or "walang palakasan", during my transaction.', CSM_SQD_LABELS),
+    ('sqd7', 'SQD7. I was treated courteously by the staff, and (if asked for help) the staff was helpful.', CSM_SQD_LABELS),
+    ('sqd8', 'SQD8. I got what I needed, or (if denied) the denial was sufficiently explained to me.', CSM_SQD_LABELS),
+]
+
+@app.route('/admin/csm')
+@admin_required
+def admin_csm():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""SELECT c.*, t.reference_no FROM csm_responses c
+                   LEFT JOIN tickets t ON t.id = c.ticket_id
+                   ORDER BY c.submitted_at DESC, c.id DESC""")
+    rows = cur.fetchall()
+    conn.close()
+
+    total = len(rows)
+    tallies = []
+    for key, title, opts in CSM_QUESTIONS:
+        norm = [(o, o) if isinstance(o, str) else o for o in opts]
+        counts = {val: 0 for val, _ in norm}
+        answered = 0
+        for r in rows:
+            v = (r[key] or '').strip() if r[key] is not None else ''
+            if not v:
+                continue
+            answered += 1
+            counts[v] = counts.get(v, 0) + 1
+        items = []
+        for val, label in norm:
+            c = counts.get(val, 0)
+            items.append({'label': label, 'count': c,
+                          'pct': round(c * 100.0 / answered, 1) if answered else 0.0})
+        avg = None
+        if key.startswith('sqd'):
+            scores = [CSM_SCORE[r[key]] for r in rows if r[key] in CSM_SCORE]
+            avg = round(sum(scores) / len(scores), 2) if scores else None
+        tallies.append({'key': key, 'title': title, 'items': items,
+                        'answered': answered, 'avg': avg})
+
+    sqd0 = next(t for t in tallies if t['key'] == 'sqd0')
+    suggestions = [r for r in rows if r['suggestions'] and str(r['suggestions']).strip()]
+    return render_template_string(ADMIN_CSM_HTML, total=total, tallies=tallies, rows=rows,
+                                  suggestions=suggestions, sqd0=sqd0)
+
+ADMIN_CSM_HTML = """<!DOCTYPE html><html><head><meta charset='UTF-8'>
+<title>CSM Monitoring</title>
+<meta name='viewport' content='width=device-width, initial-scale=1.0'>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;font-family:'Segoe UI',Tahoma,Arial,sans-serif}
+body{background:#f3f6f3;padding:1.5rem;max-width:1100px;margin:0 auto}
+.back{display:inline-block;margin-bottom:1rem;color:#1e5631;text-decoration:none;font-weight:600}
+h1{color:#1e5631;font-size:1.5rem;margin-bottom:0.3rem}
+.sub{color:#666;font-size:0.9rem;margin-bottom:1.2rem}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:0.8rem;margin-bottom:1.2rem}
+.stat{background:#fff;border-radius:10px;padding:1rem;box-shadow:0 2px 10px rgba(0,0,0,0.08);border-top:4px solid #1e5631}
+.stat .n{font-size:1.8rem;font-weight:800;color:#14421f}
+.stat .l{font-size:0.8rem;color:#555;margin-top:0.2rem}
+.card{background:#fff;border-radius:10px;padding:1.2rem;margin-bottom:1rem;box-shadow:0 2px 10px rgba(0,0,0,0.08)}
+.card h3{color:#1e5631;font-size:1rem;margin-bottom:0.2rem}
+.meta{font-size:0.78rem;color:#777;margin-bottom:0.7rem}
+table{width:100%;border-collapse:collapse;font-size:0.88rem}
+th,td{padding:0.45rem 0.5rem;text-align:left;border-bottom:1px solid #eee;vertical-align:middle}
+th{background:#eef5ef;color:#14421f;font-size:0.8rem}
+td.num,th.num{text-align:right;white-space:nowrap}
+.bar{background:#e6ece7;border-radius:4px;height:10px;min-width:90px;overflow:hidden}
+.bar i{display:block;height:100%;background:#1e5631}
+.sug{border-left:3px solid #d4a017;background:#fffbea;padding:0.5rem 0.8rem;margin-bottom:0.5rem;font-size:0.88rem;border-radius:4px}
+.sug small{color:#888;display:block;margin-top:0.2rem}
+.wrap{overflow-x:auto}
+a.v{color:#1e5631;font-weight:700;text-decoration:none}
+.empty{color:#777;text-align:center;padding:1.5rem}
+</style></head><body>
+<a href='/dashboard' class='back'>&larr; Back to Dashboard</a>
+<h1>Client Satisfaction Measurement (CSM) &mdash; Monitoring</h1>
+<div class='sub'>Summary of all survey responses and tally per answer option.</div>
+
+<div class='cards'>
+  <div class='stat'><div class='n'>{{total}}</div><div class='l'>Total responses</div></div>
+  <div class='stat'><div class='n'>{{ sqd0.avg if sqd0.avg is not none else '&ndash;'|safe }}{% if sqd0.avg is not none %}<span style='font-size:0.9rem;color:#777'> / 5</span>{% endif %}</div><div class='l'>Average overall satisfaction (SQD0)</div></div>
+  <div class='stat'><div class='n'>{{suggestions|length}}</div><div class='l'>Responses with suggestions</div></div>
+</div>
+
+<div class='card'>
+  <h3>All survey responses</h3>
+  <div class='meta'>Newest first. Click View to open the full form.</div>
+  {% if rows %}
+  <div class='wrap'><table>
+    <tr><th>#</th><th>Date</th><th>Ticket</th><th>Client type</th><th>Sex</th><th>Age</th><th>Service availed</th><th>SQD0</th><th></th></tr>
+    {% for r in rows %}
+    <tr><td>{{loop.index}}</td><td>{{ (r.submitted_at or '')[:10] }}</td><td>{{r.reference_no or r.ticket_id}}</td>
+      <td>{{r.client_type or '-'}}</td><td>{{r.sex or '-'}}</td><td>{{r.age or '-'}}</td>
+      <td>{{r.service_availed or '-'}}</td><td>{{r.sqd0 or '-'}}</td>
+      <td><a class='v' href='/tickets/{{r.ticket_id}}/csm/view'>View</a></td></tr>
+    {% endfor %}
+  </table></div>
+  {% else %}<div class='empty'>No survey responses yet.</div>{% endif %}
+</div>
+
+<h2 style='color:#1e5631;font-size:1.15rem;margin:1.2rem 0 0.6rem'>Tally per question</h2>
+{% for q in tallies %}
+<div class='card'>
+  <h3>{{q.title}}</h3>
+  <div class='meta'>{{q.answered}} answered{% if q.avg is not none %} &middot; average score {{q.avg}} / 5 (N/A excluded){% endif %}</div>
+  <div class='wrap'><table>
+    <tr><th>Answer option</th><th class='num'>Count</th><th class='num'>Percentage</th><th style='width:30%'></th></tr>
+    {% for it in q['items'] %}
+    <tr><td>{{it.label}}</td><td class='num'>{{it.count}}</td><td class='num'>{{'%.1f'|format(it.pct)}}%</td>
+      <td><div class='bar'><i style='width:{{it.pct}}%'></i></div></td></tr>
+    {% endfor %}
+    <tr style='font-weight:700'><td>Total</td><td class='num'>{{q.answered}}</td><td class='num'>{% if q.answered %}100.0%{% else %}0.0%{% endif %}</td><td></td></tr>
+  </table></div>
+</div>
+{% endfor %}
+
+<div class='card'>
+  <h3>Suggestions from clients</h3>
+  <div class='meta'>Optional comments submitted with the form.</div>
+  {% for r in suggestions %}
+  <div class='sug'>{{r.suggestions}}<small>{{r.reference_no or r.ticket_id}} &middot; {{ (r.submitted_at or '')[:10] }}</small></div>
+  {% else %}<div class='empty'>No suggestions yet.</div>{% endfor %}
+</div>
+</body></html>"""
+
 # ==============================================
 # HTML TEMPLATES
 # ==============================================
@@ -1949,6 +2103,7 @@ tbody tr:nth-child(even){background:#f7faf7}
     <a href='{{url_for("dashboard")}}' class='{% if request.endpoint == "dashboard" %}active{% endif %}'>Dashboard</a>
     {% if role == "admin" %}
     <a href='{{url_for("admin_reports")}}' class='{% if request.endpoint == "admin_reports" %}active{% endif %}'>Staff Reports</a>
+    <a href='{{url_for("admin_csm")}}' class='{% if request.endpoint == "admin_csm" %}active{% endif %}'>CSM Monitoring</a>
     {% endif %}
     {% if role == "admin" %}
     {% endif %}
