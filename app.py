@@ -872,7 +872,7 @@ document.getElementById('safLogo').src = document.images[0].src;
     var h24 = p.getUTCHours(), mm = String(p.getUTCMinutes()).padStart(2,'0');
     var ap = h24 >= 12 ? 'PM' : 'AM', h12 = h24 % 12 || 12;
     document.getElementById('dateReq').value = y + '-' + m + '-' + d;
-    document.getElementById('timeReq').value = h12 + ':' + mm + ' ' + ap + ' (PHT)';
+    document.getElementById('timeReq').value = h12 + ':' + mm + ' ' + ap;
   }
   tick(); setInterval(tick, 1000);
 })();
@@ -1005,101 +1005,118 @@ SAF_PRINT_HTML = """<!DOCTYPE html><html><head><meta charset='UTF-8'>
 <title>Service Assistance Form — {{t.reference_no}}</title>
 <meta name='viewport' content='width=device-width, initial-scale=1.0'>
 <style>
-@page{size:A4 portrait;margin:12mm}
-*{box-sizing:border-box;font-family:Arial,Helvetica,sans-serif;margin:0;padding:0}
-html,body{background:#fff;color:#111}
-body{font-size:12px;line-height:1.35;max-width:186mm;margin:0 auto;padding:8px}
-.bar{display:flex;gap:8px;justify-content:center;margin:8px 0 14px}
+@page{size:A4 portrait;margin:11mm 16mm}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:#fff;color:#000}
+body{font-family:'Times New Roman',Times,serif;font-size:12pt;line-height:1.25;max-width:178mm;margin:0 auto;padding:8px}
+.bar{display:flex;gap:8px;justify-content:center;margin:8px 0 14px;font-family:Arial,Helvetica,sans-serif}
 .bar button,.bar a{padding:0.55rem 1.3rem;border:none;border-radius:6px;font-weight:700;font-size:0.9rem;cursor:pointer;text-decoration:none;background:#1e5631;color:#fff}
 .bar a{background:#666}
-.page{border:1.5px solid #222;padding:10px 14px;page-break-inside:avoid;break-inside:avoid}
-.top{position:relative;text-align:center;padding-bottom:6px;border-bottom:2px solid #14421f;margin-bottom:8px}
-.saf{position:absolute;top:0;left:0;border:1.5px solid #333;padding:3px 7px;font-size:10px;font-weight:700;text-align:left;line-height:1.35}
-.top img{width:62px;height:62px;display:block;margin:0 auto 2px}
-.u{font-weight:700;font-size:13px;letter-spacing:.4px}
-.c{font-size:10.5px;color:#444}
-.ttl{font-weight:800;font-size:17px;color:#14421f;letter-spacing:1px;margin-top:4px}
-.sub{font-size:10.5px;font-style:italic;color:#444}
-.row{display:flex;gap:10px;margin:5px 0}
-.f{flex:1}
-.lb{font-size:10px;font-weight:700;color:#14421f;text-transform:uppercase;letter-spacing:.3px}
-.v{border-bottom:1px solid #333;min-height:18px;padding:1px 3px;font-size:12px;word-break:break-word}
-.box{border:1px solid #333;min-height:60px;padding:4px 6px;font-size:12px;white-space:pre-wrap;word-break:break-word}
-.chk{display:grid;grid-template-columns:1fr 1fr;gap:3px 14px;margin:4px 0 6px;padding:6px 8px;border:1px solid #999}
-.chk span{font-size:11.5px}
-.sec{font-weight:700;color:#14421f;font-size:11.5px;margin:8px 0 2px;border-bottom:1px solid #999}
-.sig{display:flex;gap:30px;margin-top:22px}
-.sig div{flex:1;text-align:center;font-size:10.5px}
-.sig .ln{border-top:1px solid #222;margin-top:26px;padding-top:2px;font-weight:700}
-.foot{margin-top:8px;font-size:9.5px;color:#555;text-align:center}
+.page{page-break-inside:avoid;break-inside:avoid}
+
+/* ---- header: SAF box (left) + seal (centre) + title ---- */
+.head{display:flex;justify-content:space-between;align-items:flex-start}
+.saf{width:58mm;border:1.5px solid #000;font-weight:700;font-size:10.5pt}
+.saf .h{padding:2px 7px;border-bottom:1.5px solid #000}
+.saf .n{min-height:9mm;padding:3px 7px;font-weight:700;font-size:11pt}
+.seal{width:23mm;height:23mm;object-fit:contain;display:block}
+.head .sp{width:58mm}
+.ttl{text-align:center;font-weight:700;font-size:14pt;margin-top:2.5mm}
+.sub{text-align:center;font-weight:700;font-style:italic;font-size:10pt}
+
+/* ---- fields ---- */
+.fl{display:flex;align-items:flex-end;margin-top:4mm}
+.fl.top{align-items:flex-start}
+.fl b{white-space:nowrap}
+.ln{flex:1;border-bottom:1px solid #000;min-height:6.5mm;padding:0 4px;margin-left:4px;word-break:break-word}
+.two{display:flex;justify-content:space-between;gap:12mm}
+.two .fl{width:50%}
+.two .fl.r{width:44%}
+.fl.short .ln{max-width:100mm}
+
+/* ---- complaint checkboxes ---- */
+.sec{font-weight:700;margin-top:5mm}
+.chk{display:grid;grid-template-columns:1fr 1fr;gap:3.5mm 10mm;margin-top:3mm;padding-left:3mm}
+.chk div{display:flex;align-items:flex-end;font-weight:700;font-size:10pt}
+.cb{display:inline-flex;align-items:center;justify-content:center;width:5.6mm;height:5.6mm;border:1.5px solid #000;margin-right:6mm;
+  font-size:11pt;font-weight:700;line-height:1;font-family:'Segoe UI Symbol','DejaVu Sans',Arial,sans-serif;flex:none}
+.oth{display:inline-block;border-bottom:1px solid #000;min-width:48mm;font-weight:400;font-size:11pt;padding:0 3px;margin-left:2px;min-height:5mm}
+
+/* ---- signatures ---- */
+.sg{display:flex;align-items:flex-end;margin-top:7mm}
+.sg b{width:27mm;white-space:nowrap}
+.sg .ln{flex:none;width:68mm;margin-left:0}
+.cap{margin-left:27mm;width:68mm;text-align:center;font-weight:700;font-size:11pt}
+
+/* ---- satisfaction box ---- */
+.sat{border:1.5px solid #000;margin-top:5mm;padding:2mm 4mm 3.5mm}
+.sat .t{font-weight:700;font-size:11pt}
+.sat .t u{font-weight:700}
+.sat .t i{font-weight:400;font-size:10pt}
+.sat .g{display:grid;grid-template-columns:1fr 1fr;gap:3mm 6mm;margin-top:2.5mm;padding-left:3mm}
+.sat .g div{display:flex;align-items:center;font-weight:700;font-size:10.5pt}
+.sat .cb{margin-right:4mm}
+.code{margin-top:4mm;font-weight:700;font-size:10pt}
+
+@media screen{
+  .page{border:1px solid #ccc;padding:12mm 14mm;margin-bottom:20px;box-shadow:0 2px 10px rgba(0,0,0,.12)}
+}
 @media print{
   .bar{display:none !important}
   body{padding:0;max-width:none}
-  .page{border:1.5px solid #222}
   *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
 </style></head><body>
 <div class='bar'><button onclick='window.print()'>&#128424; Print</button><a href='/tickets/{{t.id}}'>&larr; Back</a></div>
 <div class='page'>
-  <div class='top'>
-    <div class='saf'>SAF No. (YY:MM:SRN)<br><span style='font-weight:400'>{{t.reference_no}}</span></div>
-    <img src='{{logo}}' alt='SLSU'>
-    <div class='u'>SOUTHERN LUZON STATE UNIVERSITY</div>
-    <div class='c'>JGE &ndash; Tagkawayan Campus</div>
-    <div class='ttl'>SERVICE ASSISTANCE FORM</div>
-    <div class='sub'>(Maintenance &amp; Repair Purposes)</div>
-  </div>
 
-  <div class='row'>
-    <div class='f'><div class='lb'>Date Request</div><div class='v'>{{date_req}}</div></div>
-    <div class='f'><div class='lb'>Time</div><div class='v'>{{time_req}}</div></div>
-    <div class='f'><div class='lb'>Priority</div><div class='v'>{{t.priority|title}}</div></div>
+  <div class='head'>
+    <div class='saf'><div class='h'>SAF No. (YY:MM:SRN)</div><div class='n'>{{t.reference_no}}</div></div>
+    {% if logo %}<img class='seal' src='{{logo}}' alt='SLSU'>{% else %}<div class='seal'></div>{% endif %}
+    <div class='sp'></div>
   </div>
-  <div class='row'>
-    <div class='f'><div class='lb'>Requisitioner Office</div><div class='v'>{{t.department}}</div></div>
-    <div class='f'><div class='lb'>Contact Number</div><div class='v'>{{t.contact_number}}</div></div>
-  </div>
-  <div class='row'>
-    <div class='f' style='flex:2'><div class='lb'>Requisitioner (Full Name)</div><div class='v'>{{t.requisitioner_name or t.requestor_name}}</div></div>
-    <div class='f'><div class='lb'>Account Type</div><div class='v'>{{t.requestor_account_type or '&mdash;'|safe}}</div></div>
-  </div>
+  <div class='ttl'>SERVICE ASSISTANCE FORM</div>
+  <div class='sub'>(Maintenance &amp; Repair Purposes)</div>
 
-  <div class='sec'>Name of Complaint / Service Needed</div>
+  <div class='two'>
+    <div class='fl'><b>Date Request :</b><div class='ln'>{{date_req}}</div></div>
+    <div class='fl r'><b>Time :</b><div class='ln'>{{time_req}}</div></div>
+  </div>
+  <div class='fl short'><b>Requisitioner Office:</b><div class='ln'>{{t.department}}</div></div>
+  <div class='fl short'><b>Requisitioner :</b><div class='ln'>{{t.requisitioner_name or t.requestor_name}}</div></div>
+
+  <div class='sec'>Name of Complaint:</div>
   <div class='chk'>
     {% for opt in complaints %}
-    <span>{{ '&#9746;'|safe if opt in selected else '&#9744;'|safe }} {{opt}}{% if opt == 'Other' and other_text %}: <u>{{other_text}}</u>{% endif %}</span>
+    <div><span class='cb'>{% if opt in selected %}&#10004;{% endif %}</span>{% if opt == 'Other' %}Others:<span class='oth'>{{other_text}}</span>{% else %}{{opt}}{% endif %}</div>
     {% endfor %}
   </div>
 
-  <div class='sec'>Problem Reported</div>
-  <div class='box'>{{t.problem_description}}</div>
-
-  <div class='row'>
-    <div class='f'><div class='lb'>Brand / Model</div><div class='v'>{{t.brand_model or ''}}</div></div>
-    <div class='f'><div class='lb'>Serial / Property No.</div><div class='v'>{{t.serial_property_no or ''}}</div></div>
-  </div>
-  <div class='row'>
-    <div class='f'><div class='lb'>Location / Room No.</div><div class='v'>{{t.location_room}}</div></div>
+  <div class='fl top' style='margin-top:6mm'><b>Problem Reported:</b><div class='ln' style='white-space:pre-wrap'>{{t.problem_description}}</div></div>
+  <div class='fl'><b>Findings :</b><div class='ln'></div></div>
+  <div class='fl'><b>Status/Note:</b><div class='ln'></div></div>
+  <div class='two'>
+    <div class='fl'><b>Date Accomplished :</b><div class='ln'></div></div>
+    <div class='fl r'><b>Time:</b><div class='ln'></div></div>
   </div>
 
-  {% if t.assigned_name or t.work_done %}
-  <div class='sec'>For ICT Office Use</div>
-  <div class='row'>
-    <div class='f'><div class='lb'>Assigned To</div><div class='v'>{{t.assigned_name or ''}}</div></div>
-    <div class='f'><div class='lb'>Scheduled Date</div><div class='v'>{{t.scheduled_date or ''}}</div></div>
-  </div>
-  {% if t.work_done %}
-  <div class='lb'>Work Done</div><div class='box' style='min-height:34px'>{{t.work_done}}</div>
-  {% if t.parts_replaced %}<div class='lb' style='margin-top:4px'>Parts Replaced / Used</div><div class='v'>{{t.parts_replaced}}</div>{% endif %}
-  {% if t.resolution_notes %}<div class='lb' style='margin-top:4px'>Remarks</div><div class='v'>{{t.resolution_notes}}</div>{% endif %}
-  {% endif %}
-  {% endif %}
+  <div class='sg' style='margin-top:8mm'><b>Conformed:</b><div class='ln'></div></div>
+  <div class='cap'>Requisitioner Name &amp; Signature</div>
 
-  <div class='sig'>
-    <div><div class='ln'>{{t.requisitioner_name or t.requestor_name}}</div>Requisitioner</div>
-    <div><div class='ln'>{{t.assigned_name or '&nbsp;'|safe}}</div>ICT Staff</div>
+  <div class='sg'><b>Attended By:</b><div class='ln'></div></div>
+  <div class='cap'>Computer Technician</div>
+
+  <div class='sat'>
+    <div class='t'><u>Service Satisfaction Level</u> <i>(Please put (&#10003;) Check Mark)</i></div>
+    <div class='g'>
+      <div><span class='cb'></span>Outstanding</div>
+      <div><span class='cb'></span>Fair</div>
+      <div><span class='cb'></span>Very Satisfactory</div>
+      <div><span class='cb'></span>Not Satisfactory</div>
+    </div>
   </div>
-  <div class='foot'>Ref. {{t.reference_no}} &middot; Submitted {{t.submitted_at|ph12}} (PHT) &middot; MIS ICT System &amp; Repair</div>
+
+  <div class='code'>OP-MIS-2.01F2, Rev.2</div>
 </div>
 <script>if(location.search.indexOf('auto=1')>-1){window.addEventListener('load',function(){setTimeout(function(){window.print();},300);});}</script>
 </body></html>"""
@@ -1132,7 +1149,7 @@ def print_ticket(ticket_id):
     # Date / time are the SERVER timestamp saved when the request was submitted (Philippine Time)
     submitted = str(t['submitted_at'] or '')
     date_req = submitted[:10]
-    time_req = fmt_time_12h(submitted) + ' (PHT)'
+    time_req = fmt_time_12h(submitted)
 
     # Rebuild the checked boxes from what the client chose
     selected, other_text = [], ''
@@ -1705,7 +1722,7 @@ def staff_close_ticket(ticket_id):
     conn = get_db()
     cur = conn.cursor()
 
-    cur.execute("UPDATE tickets SET staff_approved = 1, status = 'completed_approved', completed_at = %s, approved_at = %s WHERE id = %s AND assigned_to = %s AND status IN ('completed_pending_staff', 'pending_admin_final')",
+    cur.execute("UPDATE tickets SET status = 'completed_approved', completed_at = %s, approved_at = %s WHERE id = %s AND assigned_to = %s AND status = 'pending_admin_final'",
                 (ph_now_str(), ph_now_str(), ticket_id, session['user_id']))
 
     if cur.rowcount == 0:
@@ -2256,7 +2273,7 @@ table.history .dt{font-size:0.8rem;color:#666;white-space:nowrap}
 <div class='enc-row'><span class='enc-lbl'>Email</span><span class='enc-val email'>{{ticket.requestor_email}}</span></div>
 <div class='enc-row'><span class='enc-lbl'>Department</span><span class='enc-val'>{{ticket.department}}</span></div>
 <div class='enc-row'><span class='enc-lbl'>Contact No.</span><span class='enc-val'>{{ticket.contact_number}}</span></div>
-<div class='enc-row'><span class='enc-lbl'>Date/Time </span><span class='enc-val'>{{ticket.submitted_at|ph12}} (PHT)</span></div>
+<div class='enc-row'><span class='enc-lbl'>Date/Time </span><span class='enc-val'>{{ticket.submitted_at|ph12}}</span></div>
 </div>
 {% if role == "admin" and ticket.status == "pending_admin" %}
 <div class='card'>
@@ -2293,11 +2310,8 @@ table.history .dt{font-size:0.8rem;color:#666;white-space:nowrap}
 <div class='card'>
 <h3>Approve Work</h3>
 <p style='margin-bottom:0.8rem'>Review the work report above. Confirm it is complete.</p>
-<form method='post' action='/tickets/{{ticket.id}}/staff-close' style='margin-bottom:0.6rem'>
-<button type='submit' class='btn-green' style='font-size:1.05rem'>Approve &amp; Close Request</button>
-</form>
 <form method='post' action='/tickets/{{ticket.id}}/staff-approve'>
-<button type='submit' class='btn-green' style='background:#7b1fa2'>Approve &amp; Notify Requestor (for CSM Feedback)</button>
+<button type='submit' class='btn-green'>Approve &amp; Notify Requestor</button>
 </form>
 </div>
 {% endif %}
